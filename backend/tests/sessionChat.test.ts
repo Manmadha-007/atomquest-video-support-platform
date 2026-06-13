@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import express from "express";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 
-const SESSION_ID = "webrtc-session-1";
-const AGENT_ID = "webrtc-agent-1";
-const CUSTOMER_ID = "webrtc-customer-1";
+const SESSION_ID = "chat-session-1";
+const TOKEN = "chat-token";
+const AGENT_ID = "chat-agent-1";
+const CUSTOMER_ID = "chat-customer-1";
 
 type AckResponse<TPayload = unknown> =
   | {
@@ -25,11 +27,24 @@ type AckResponse<TPayload = unknown> =
       };
     };
 
+interface ChatEventPayload {
+  sessionId: string;
+  room: string;
+  message: {
+    id: string;
+    sessionId: string;
+    participantId: string;
+    role: "AGENT" | "CUSTOMER";
+    content: string;
+    createdAt: string;
+  };
+}
+
 async function createTempDatabase(): Promise<{
   directory: string;
   databaseUrl: string;
 }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-webrtc-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-chat-"));
   const databasePath = path.join(directory, "test.db").replace(/\\/g, "/");
 
   return {
@@ -155,7 +170,7 @@ async function seedSession(
   await prisma.session.create({
     data: {
       id: SESSION_ID,
-      token: "webrtc-token",
+      token: TOKEN,
       status: "ACTIVE",
       participants: {
         create: [
@@ -268,25 +283,25 @@ function waitForEvent<TPayload>(
   });
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-test("WebRTC signaling validates membership and routes only to the target participant", async () => {
+test("session chat persists messages, broadcasts to the room, and keeps ended history readable", async () => {
   const { databaseUrl, directory } = await createTempDatabase();
   process.env.DATABASE_URL = databaseUrl;
 
-  const [{ initializeSocketServer }, { prisma }] = await Promise.all([
-    import("../src/sockets/socketServer.js"),
-    import("../src/config/prisma.js"),
-  ]);
+  const [{ default: sessionRoutes }, { initializeSocketServer }, { prisma }] =
+    await Promise.all([
+      import("../src/routes/sessionRoutes.js"),
+      import("../src/sockets/socketServer.js"),
+      import("../src/config/prisma.js"),
+    ]);
 
   await prepareSchema(prisma);
   await seedSession(prisma);
 
-  const httpServer = createServer();
+  const app = express();
+  app.use(express.json());
+  app.use("/api/sessions", sessionRoutes);
+
+  const httpServer = createServer(app);
   const io = initializeSocketServer(httpServer);
   const url = await listen(httpServer);
   const agentSocket = await connectClient(url);
@@ -298,103 +313,147 @@ test("WebRTC signaling validates membership and routes only to the target partic
       participantId: AGENT_ID,
       role: "AGENT",
     });
-
-    assert.equal(agentJoin.ok, true);
-
-    const unavailableTarget = await emitAck(agentSocket, "webrtc:offer", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      description: {
-        type: "offer",
-        sdp: "v=0\r\n",
-      },
-    });
-
-    assert.equal(unavailableTarget.ok, false);
-    assert.equal(unavailableTarget.error.code, "TARGET_NOT_AVAILABLE");
-
     const customerJoin = await emitAck(customerSocket, "session:join", {
       sessionId: SESSION_ID,
       participantId: CUSTOMER_ID,
       role: "CUSTOMER",
     });
 
+    assert.equal(agentJoin.ok, true);
     assert.equal(customerJoin.ok, true);
 
-    let senderOfferCount = 0;
-    agentSocket.on("webrtc:offer", () => {
-      senderOfferCount += 1;
-    });
-
-    const offerReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:offer",
-    );
-    const offerAck = await emitAck<{ messageId: string }>(
+    const agentSeesAgentMessage = waitForEvent<ChatEventPayload>(
       agentSocket,
-      "webrtc:offer",
+      "session:chat:new",
+    );
+    const customerSeesAgentMessage = waitForEvent<ChatEventPayload>(
+      customerSocket,
+      "session:chat:new",
+    );
+    const agentChatAck = await emitAck<ChatEventPayload>(
+      agentSocket,
+      "session:chat:send",
       {
         sessionId: SESSION_ID,
         participantId: AGENT_ID,
-        targetParticipantId: CUSTOMER_ID,
-        description: {
-          type: "offer",
-          sdp: "v=0\r\n",
-        },
+        content: "  Hello from support.  ",
       },
     );
 
-    assert.equal(offerAck.ok, true);
+    assert.equal(agentChatAck.ok, true);
+    assert.equal(agentChatAck.data.message.content, "Hello from support.");
+    assert.equal(agentChatAck.data.message.role, "AGENT");
+    assert.equal(agentChatAck.data.message.participantId, AGENT_ID);
 
-    const routedOffer = await offerReceived;
+    const [agentMessageForAgent, agentMessageForCustomer] = await Promise.all([
+      agentSeesAgentMessage,
+      customerSeesAgentMessage,
+    ]);
 
-    assert.equal(routedOffer["participantId"], AGENT_ID);
-    assert.equal(routedOffer["targetParticipantId"], CUSTOMER_ID);
-    assert.equal(routedOffer["messageId"], offerAck.data.messageId);
-
-    await wait(50);
-    assert.equal(senderOfferCount, 0);
-
-    const answerReceived = waitForEvent<Record<string, unknown>>(
-      agentSocket,
-      "webrtc:answer",
+    assert.equal(agentMessageForAgent.message.id, agentChatAck.data.message.id);
+    assert.equal(
+      agentMessageForCustomer.message.id,
+      agentChatAck.data.message.id,
     );
-    const answerAck = await emitAck(customerSocket, "webrtc:answer", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-      targetParticipantId: AGENT_ID,
-      description: {
-        type: "answer",
-        sdp: "v=0\r\n",
-      },
-    });
 
-    assert.equal(answerAck.ok, true);
-    assert.equal((await answerReceived)["participantId"], CUSTOMER_ID);
-
-    const iceReceived = waitForEvent<Record<string, unknown>>(
+    const customerSeesOwnMessage = waitForEvent<ChatEventPayload>(
       customerSocket,
-      "webrtc:ice-candidate",
+      "session:chat:new",
     );
-    const iceAck = await emitAck(agentSocket, "webrtc:ice-candidate", {
+    const customerChatAck = await emitAck<ChatEventPayload>(
+      customerSocket,
+      "session:chat:send",
+      {
+        sessionId: SESSION_ID,
+        participantId: CUSTOMER_ID,
+        content: "Thanks, I can see it.",
+      },
+    );
+
+    assert.equal(customerChatAck.ok, true);
+    assert.equal(customerChatAck.data.message.role, "CUSTOMER");
+    assert.equal(
+      (await customerSeesOwnMessage).message.id,
+      customerChatAck.data.message.id,
+    );
+
+    const mismatchedParticipant = await emitAck(
+      agentSocket,
+      "session:chat:send",
+      {
+        sessionId: SESSION_ID,
+        participantId: CUSTOMER_ID,
+        content: "spoof attempt",
+      },
+    );
+
+    assert.equal(mismatchedParticipant.ok, false);
+    assert.equal(
+      mismatchedParticipant.error.code,
+      "PARTICIPANT_SESSION_MISMATCH",
+    );
+
+    const emptyMessage = await emitAck(agentSocket, "session:chat:send", {
       sessionId: SESSION_ID,
       participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      candidate: null,
+      content: "   ",
     });
 
-    assert.equal(iceAck.ok, true);
-    assert.equal((await iceReceived)["candidate"], null);
+    assert.equal(emptyMessage.ok, false);
+    assert.equal(emptyMessage.error.code, "VALIDATION_ERROR");
 
-    await emitAck(agentSocket, "session:leave", {
+    const persistedMessages = await prisma.message.findMany({
+      where: {
+        sessionId: SESSION_ID,
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+
+    assert.equal(persistedMessages.length, 2);
+    assert.equal(persistedMessages[0]?.participantId, AGENT_ID);
+    assert.equal(persistedMessages[1]?.participantId, CUSTOMER_ID);
+
+    await prisma.session.update({
+      where: {
+        id: SESSION_ID,
+      },
+      data: {
+        status: "ENDED",
+        endedAt: new Date(),
+        endedBy: "AGENT",
+      },
+    });
+
+    const endedSend = await emitAck(agentSocket, "session:chat:send", {
       sessionId: SESSION_ID,
       participantId: AGENT_ID,
+      content: "after close",
     });
-    await emitAck(customerSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-    });
+
+    assert.equal(endedSend.ok, false);
+    assert.equal(endedSend.error.code, "SESSION_ENDED");
+
+    const historyResponse = await fetch(
+      `${url}/api/sessions/${SESSION_ID}/messages`,
+    );
+    const historyBody = (await historyResponse.json()) as {
+      messages: Array<{
+        id: string;
+        participantId: string;
+        role: string;
+        content: string;
+      }>;
+    };
+
+    assert.equal(historyResponse.status, 200);
+    assert.deepEqual(
+      historyBody.messages.map((message) => message.content),
+      ["Hello from support.", "Thanks, I can see it."],
+    );
+    assert.deepEqual(
+      historyBody.messages.map((message) => message.role),
+      ["AGENT", "CUSTOMER"],
+    );
   } finally {
     agentSocket.disconnect();
     customerSocket.disconnect();

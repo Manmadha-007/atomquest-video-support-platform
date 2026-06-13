@@ -260,6 +260,34 @@ export class ParticipantPresenceRegistry {
     return presence ? clonePresence(presence) : null;
   }
 
+  public endSession(sessionId: string): {
+    activeParticipants: ActiveSessionParticipant[];
+    activeCount: number;
+  } {
+    const activeParticipants = this.getActiveParticipants(sessionId);
+    const sessionParticipants = this.sessions.get(sessionId);
+
+    if (sessionParticipants) {
+      for (const [participantId, entry] of sessionParticipants) {
+        this.clearReconnectTimer(entry);
+
+        if (entry.presence.activeSocketId) {
+          this.removeSocketIndex(
+            entry.presence.activeSocketId,
+            toPresenceKey(sessionId, participantId),
+          );
+        }
+      }
+
+      this.sessions.delete(sessionId);
+    }
+
+    return {
+      activeParticipants,
+      activeCount: activeParticipants.length,
+    };
+  }
+
   private getJoinAction(
     existingPresence: ActiveSessionParticipant | undefined,
     socketId: string,

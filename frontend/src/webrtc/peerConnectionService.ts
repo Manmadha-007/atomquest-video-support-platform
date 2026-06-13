@@ -11,6 +11,11 @@ import type {
 const INTERNAL_DATA_CHANNEL_LABEL = "atomquest-webrtc-connection";
 const DEFAULT_CONNECTED_TIMEOUT_MS = 15_000;
 
+export interface CallMediaState {
+  cameraEnabled: boolean;
+  microphoneEnabled: boolean;
+}
+
 export interface AtomQuestPeerConnectionOptions {
   signalingClient: WebRtcSignalingClient;
   sessionId: string;
@@ -23,6 +28,7 @@ export interface AtomQuestPeerConnectionOptions {
     event: RTCTrackEvent,
     peerConnection: RTCPeerConnection,
   ) => void;
+  onRemoteMediaState?: (state: CallMediaState) => void;
 }
 
 export type ConnectionStateListener = (
@@ -36,6 +42,7 @@ export class AtomQuestPeerConnectionService {
   private pendingRemoteCandidates: Array<WebRtcIceCandidate | null> = [];
   private peerConnection: RTCPeerConnection | null = null;
   private internalDataChannel: RTCDataChannel | null = null;
+  private pendingLocalMediaState: CallMediaState | null = null;
   private connectionState: RTCPeerConnectionState = "new";
   private isStarted = false;
 
@@ -98,6 +105,11 @@ export class AtomQuestPeerConnectionService {
     return this.peerConnection?.connectionState ?? this.connectionState;
   }
 
+  public sendMediaState(state: CallMediaState): void {
+    this.pendingLocalMediaState = state;
+    this.flushPendingMediaState();
+  }
+
   public onConnectionStateChange(
     listener: ConnectionStateListener,
   ): () => void {
@@ -158,6 +170,7 @@ export class AtomQuestPeerConnectionService {
 
     this.internalDataChannel?.close();
     this.internalDataChannel = null;
+    this.pendingLocalMediaState = null;
     this.pendingRemoteCandidates = [];
     this.isStarted = false;
 
@@ -224,6 +237,34 @@ export class AtomQuestPeerConnectionService {
     }
 
     this.internalDataChannel = dataChannel;
+    dataChannel.onopen = () => {
+      this.flushPendingMediaState();
+    };
+    dataChannel.onmessage = (event) => {
+      const mediaState = parseMediaStateMessage(event.data);
+
+      if (mediaState) {
+        this.options.onRemoteMediaState?.(mediaState);
+      }
+    };
+
+    this.flushPendingMediaState();
+  }
+
+  private flushPendingMediaState(): void {
+    if (
+      !this.pendingLocalMediaState ||
+      this.internalDataChannel?.readyState !== "open"
+    ) {
+      return;
+    }
+
+    this.internalDataChannel.send(
+      JSON.stringify({
+        type: "media-state",
+        ...this.pendingLocalMediaState,
+      }),
+    );
   }
 
   private async handleOffer(payload: WebRtcOfferPayload): Promise<void> {
@@ -363,6 +404,31 @@ export class AtomQuestPeerConnectionService {
       error instanceof Error ? error : new Error("Unknown WebRTC error.");
 
     this.options.onError?.(normalizedError);
+  }
+}
+
+function parseMediaStateMessage(value: unknown): CallMediaState | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    const message = JSON.parse(value) as Record<string, unknown>;
+
+    if (
+      message.type !== "media-state" ||
+      typeof message.cameraEnabled !== "boolean" ||
+      typeof message.microphoneEnabled !== "boolean"
+    ) {
+      return null;
+    }
+
+    return {
+      cameraEnabled: message.cameraEnabled,
+      microphoneEnabled: message.microphoneEnabled,
+    };
+  } catch {
+    return null;
   }
 }
 

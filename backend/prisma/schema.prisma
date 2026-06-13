@@ -16,6 +16,25 @@ enum ParticipantRole {
   CUSTOMER
 }
 
+enum RecordingStatus {
+  RECORDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum RecordingStopReason {
+  AGENT
+  SESSION_ENDED
+  CUSTOMER_DISCONNECTED
+  RECOVERY
+}
+
+enum MessageKind {
+  TEXT
+  FILE
+}
+
 model Session {
   id            String        @id @default(cuid())
   token         String        @unique
@@ -26,6 +45,8 @@ model Session {
 
   participants  Participant[]
   messages      Message[]
+  recordings    Recording[]
+  fileAttachments FileAttachment[]
 
   @@index([status])
 }
@@ -41,8 +62,43 @@ model Participant {
   joinedAt   DateTime @default(now())
   leftAt     DateTime?
 
+  messages   Message[]
+  recordingsStarted Recording[] @relation("RecordingStartedBy")
+  fileAttachments FileAttachment[]
+
   @@unique([sessionId, role])
   @@index([sessionId])
+}
+
+model Recording {
+  id                     String              @id @default(cuid())
+
+  sessionId              String
+  session                Session             @relation(fields: [sessionId], references: [id])
+
+  startedByParticipantId String
+  startedByParticipant   Participant         @relation("RecordingStartedBy", fields: [startedByParticipantId], references: [id])
+
+  status                 RecordingStatus     @default(RECORDING)
+  stopReason             RecordingStopReason?
+  mimeType               String
+
+  startedAt              DateTime            @default(now())
+  stoppedAt              DateTime?
+  readyAt                DateTime?
+  durationMs             Int?
+  sizeBytes              Int?
+
+  storageKey             String?
+  downloadToken          String              @unique
+  failureReason          String?
+
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  @@index([sessionId, createdAt])
+  @@index([status])
+  @@index([startedByParticipantId])
 }
 
 model Message {
@@ -51,10 +107,42 @@ model Message {
   sessionId  String
   session    Session  @relation(fields: [sessionId], references: [id])
 
-  sender     String
+  participantId String
+  participant   Participant     @relation(fields: [participantId], references: [id])
+
+  role       ParticipantRole
+  kind       MessageKind @default(TEXT)
   content    String
 
   createdAt  DateTime @default(now())
 
+  attachment FileAttachment?
+
   @@index([sessionId, createdAt])
+  @@index([participantId])
+}
+
+model FileAttachment {
+  id            String      @id @default(cuid())
+
+  sessionId     String
+  session       Session     @relation(fields: [sessionId], references: [id])
+
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+
+  messageId     String      @unique
+  message       Message     @relation(fields: [messageId], references: [id])
+
+  originalName  String
+  mimeType      String
+  extension     String
+  sizeBytes     Int
+  storageKey    String
+  downloadToken String      @unique
+
+  createdAt     DateTime    @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([participantId])
 }

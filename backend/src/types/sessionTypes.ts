@@ -1,4 +1,9 @@
-import type { Message, Participant, Session } from "@prisma/client";
+import type {
+  Message,
+  Participant,
+  Recording,
+  Session,
+} from "@prisma/client";
 
 export type ApiErrorCategory =
   | "VALIDATION_ERROR"
@@ -20,6 +25,14 @@ export type ApiErrorCode =
   | "SESSION_INVALID_STATE_TRANSITION"
   | "SESSION_PARTICIPANT_LIMIT_REACHED"
   | "SESSION_CONCURRENT_MODIFICATION"
+  | "RECORDING_NOT_FOUND"
+  | "RECORDING_ALREADY_ACTIVE"
+  | "RECORDING_INVALID_STATE"
+  | "RECORDING_STORAGE_ERROR"
+  | "FILE_ATTACHMENT_NOT_FOUND"
+  | "FILE_UPLOAD_INVALID_TYPE"
+  | "FILE_UPLOAD_TOO_LARGE"
+  | "FILE_STORAGE_ERROR"
   | "INTERNAL_SERVER_ERROR";
 
 export interface ApiErrorResponse {
@@ -39,6 +52,14 @@ export interface JoinSessionRequest {
   token: string;
 }
 
+export interface SessionInviteDto {
+  id: string;
+  status: Session["status"];
+  createdAt: string;
+  agentReady: boolean;
+  customerJoined: boolean;
+}
+
 export interface EndSessionRequest {
   endedBy?: string;
 }
@@ -52,6 +73,8 @@ export interface SessionListItemDto {
   endedBy: string | null;
   participantCount: number;
   messageCount: number;
+  fileCount: number;
+  recordingCount: number;
 }
 
 export interface ParticipantDto {
@@ -65,9 +88,43 @@ export interface ParticipantDto {
 export interface MessageDto {
   id: string;
   sessionId: string;
-  sender: Message["sender"];
+  participantId: string;
+  role: Participant["role"];
+  kind: Message["kind"];
   content: string;
+  attachment: FileAttachmentDto | null;
   createdAt: string;
+}
+
+export interface FileAttachmentDto {
+  id: string;
+  sessionId: string;
+  participantId: string;
+  messageId: string;
+  originalName: string;
+  mimeType: string;
+  extension: string;
+  sizeBytes: number;
+  downloadUrl: string;
+  createdAt: string;
+}
+
+export interface RecordingDto {
+  id: string;
+  sessionId: string;
+  startedByParticipantId: string;
+  status: Recording["status"];
+  stopReason: Recording["stopReason"];
+  mimeType: string;
+  startedAt: string;
+  stoppedAt: string | null;
+  readyAt: string | null;
+  durationMs: number | null;
+  sizeBytes: number | null;
+  downloadUrl: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SessionDetailsDto {
@@ -79,6 +136,8 @@ export interface SessionDetailsDto {
   endedBy: string | null;
   participants: ParticipantDto[];
   messages: MessageDto[];
+  sharedFiles: FileAttachmentDto[];
+  recordings: RecordingDto[];
 }
 
 export interface CreateSessionResponse {
@@ -88,6 +147,10 @@ export interface CreateSessionResponse {
 export interface JoinSessionResponse {
   session: SessionDetailsDto;
   participant: ParticipantDto;
+}
+
+export interface GetSessionInviteResponse {
+  session: SessionInviteDto;
 }
 
 export interface EndSessionResponse {
@@ -100,6 +163,37 @@ export interface GetSessionsResponse {
 
 export interface GetSessionResponse {
   session: SessionDetailsDto;
+}
+
+export interface GetSessionMessagesResponse {
+  messages: MessageDto[];
+}
+
+export interface UploadFileResponse {
+  attachment: FileAttachmentDto;
+  message: MessageDto;
+}
+
+export interface StartRecordingRequest {
+  sessionId: string;
+  participantId: string;
+  mimeType: string;
+}
+
+export interface StopRecordingRequest {
+  participantId: string;
+}
+
+export interface RecordingResponse {
+  recording: RecordingDto;
+}
+
+export interface GetRecordingsResponse {
+  recordings: RecordingDto[];
+}
+
+export interface GetFileAttachmentsResponse {
+  files: FileAttachmentDto[];
 }
 
 export class AppError extends Error {

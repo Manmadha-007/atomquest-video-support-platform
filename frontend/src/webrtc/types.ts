@@ -1,4 +1,9 @@
-import type { ParticipantRole } from "../types/session";
+import type {
+  ParticipantRole,
+  Recording,
+  SessionDetails,
+  SessionMessage,
+} from "../types/session";
 
 export type ParticipantPresenceStatus = "online" | "reconnecting" | "offline";
 
@@ -21,6 +26,29 @@ export interface SessionJoinPayload {
   role: ParticipantRole;
 }
 
+export interface SessionLeavePayload {
+  sessionId: string;
+  participantId?: string;
+}
+
+export interface SessionChatSendPayload {
+  sessionId: string;
+  participantId: string;
+  content: string;
+}
+
+export interface SessionChatNewPayload {
+  sessionId: string;
+  room: string;
+  message: SessionMessage;
+}
+
+export interface RecordingUpdatePayload {
+  sessionId: string;
+  room: string;
+  recording: Recording;
+}
+
 export interface SessionJoinedPayload {
   sessionId: string;
   room: string;
@@ -28,6 +56,32 @@ export interface SessionJoinedPayload {
   activeParticipants: ActiveSessionParticipant[];
   activeCount: number;
   joinedAt: string;
+}
+
+export type ParticipantLeaveReason =
+  | "client_leave"
+  | "disconnect"
+  | "socket_replaced"
+  | "grace_expired";
+
+export interface SessionLeftPayload {
+  sessionId: string;
+  room: string;
+  participant: ActiveSessionParticipant;
+  activeParticipants: ActiveSessionParticipant[];
+  activeCount: number;
+  leftAt: string;
+  reason: ParticipantLeaveReason;
+}
+
+export interface SessionEndedPayload {
+  sessionId: string;
+  room: string;
+  session: SessionDetails;
+  endedAt: string;
+  endedBy: string;
+  activeParticipants: ActiveSessionParticipant[];
+  activeCount: number;
 }
 
 export type WebRtcSignalEvent =
@@ -89,6 +143,8 @@ export type SocketErrorCode =
   | "PARTICIPANT_LEFT"
   | "ROLE_MISMATCH"
   | "TARGET_NOT_AVAILABLE"
+  | "AUTH_FORBIDDEN"
+  | "PERSISTENCE_ERROR"
   | "INTERNAL_ERROR";
 
 export interface SocketErrorPayload {
@@ -116,6 +172,14 @@ export interface ClientToServerEvents {
     payload: SessionJoinPayload,
     ack?: SocketAck<SessionJoinedPayload>,
   ) => void;
+  "session:leave": (
+    payload: SessionLeavePayload,
+    ack?: SocketAck<SessionLeftPayload>,
+  ) => void;
+  "session:chat:send": (
+    payload: SessionChatSendPayload,
+    ack?: SocketAck<SessionChatNewPayload>,
+  ) => void;
   "webrtc:offer": (
     payload: WebRtcOfferPayload,
     ack?: SocketAck<WebRtcSignalAckPayload>,
@@ -132,6 +196,10 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   "session:joined": (payload: SessionJoinedPayload) => void;
+  "session:left": (payload: SessionLeftPayload) => void;
+  "session:ended": (payload: SessionEndedPayload) => void;
+  "session:chat:new": (payload: SessionChatNewPayload) => void;
+  "recording:update": (payload: RecordingUpdatePayload) => void;
   "webrtc:offer": (payload: WebRtcOfferPayload) => void;
   "webrtc:answer": (payload: WebRtcAnswerPayload) => void;
   "webrtc:ice-candidate": (payload: WebRtcIceCandidatePayload) => void;

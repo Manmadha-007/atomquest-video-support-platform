@@ -2,8 +2,10 @@ import {
   ParticipantRole,
   Prisma,
   SessionStatus,
+  type FileAttachment,
   type Message,
   type Participant,
+  type Recording,
   type Session,
 } from "@prisma/client";
 import { randomBytes } from "node:crypto";
@@ -17,23 +19,44 @@ import {
   type MessageDto,
   type ParticipantDto,
   type SessionDetailsDto,
+  type SessionInviteDto,
   type SessionListItemDto,
 } from "../types/sessionTypes.js";
+import {
+  mapFileAttachment,
+  mapMessageWithAttachment,
+} from "./fileAttachmentService.js";
+import { mapRecording } from "./recordingService.js";
+
+interface CreateSessionMessageInput {
+  sessionId: string;
+  participantId: string;
+  content: string;
+}
 
 type SessionWithDetails = Session & {
   participants: Participant[];
-  messages: Message[];
+  messages: Array<
+    Message & {
+      attachment: FileAttachment | null;
+    }
+  >;
+  fileAttachments: FileAttachment[];
+  recordings: Recording[];
 };
 
 type SessionWithCounts = Session & {
   _count: {
     participants: number;
     messages: number;
+    fileAttachments: number;
+    recordings: number;
   };
 };
 
 const TOKEN_BYTE_LENGTH = 24;
 const MAX_TOKEN_GENERATION_ATTEMPTS = 5;
+const MAX_MESSAGE_CONTENT_LENGTH = 4_000;
 
 const sessionDetailsInclude = {
   participants: {
@@ -42,9 +65,16 @@ const sessionDetailsInclude = {
     },
   },
   messages: {
-    orderBy: {
-      createdAt: "asc",
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    include: {
+      attachment: true,
     },
+  },
+  fileAttachments: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  },
+  recordings: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   },
 } satisfies Prisma.SessionInclude;
 
@@ -53,6 +83,8 @@ const sessionListInclude = {
     select: {
       participants: true,
       messages: true,
+      fileAttachments: true,
+      recordings: true,
     },
   },
 } satisfies Prisma.SessionInclude;
@@ -70,6 +102,32 @@ function normalizeEndedBy(endedBy?: string): string {
   return normalized && normalized.length > 0 ? normalized : ParticipantRole.AGENT;
 }
 
+function normalizeMessageContent(content: string): string {
+  const normalized = content.trim();
+
+  if (normalized.length === 0) {
+    throw new AppError(
+      "VALIDATION_INVALID_FIELD",
+      "Message content cannot be empty.",
+      400,
+      "VALIDATION_ERROR",
+      { field: "content" },
+    );
+  }
+
+  if (normalized.length > MAX_MESSAGE_CONTENT_LENGTH) {
+    throw new AppError(
+      "VALIDATION_INVALID_FIELD",
+      `Message content must be ${MAX_MESSAGE_CONTENT_LENGTH} characters or fewer.`,
+      400,
+      "VALIDATION_ERROR",
+      { field: "content", maxLength: MAX_MESSAGE_CONTENT_LENGTH },
+    );
+  }
+
+  return normalized;
+}
+
 function toIsoStringOrNull(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
@@ -84,16 +142,6 @@ function mapParticipant(participant: Participant): ParticipantDto {
   };
 }
 
-function mapMessage(message: Message): MessageDto {
-  return {
-    id: message.id,
-    sessionId: message.sessionId,
-    sender: message.sender,
-    content: message.content,
-    createdAt: message.createdAt.toISOString(),
-  };
-}
-
 function mapSessionDetails(session: SessionWithDetails): SessionDetailsDto {
   return {
     id: session.id,
@@ -103,7 +151,9 @@ function mapSessionDetails(session: SessionWithDetails): SessionDetailsDto {
     endedAt: toIsoStringOrNull(session.endedAt),
     endedBy: session.endedBy,
     participants: session.participants.map(mapParticipant),
-    messages: session.messages.map(mapMessage),
+    messages: session.messages.map(mapMessageWithAttachment),
+    sharedFiles: session.fileAttachments.map(mapFileAttachment),
+    recordings: session.recordings.map(mapRecording),
   };
 }
 
@@ -117,6 +167,8 @@ function mapSessionListItem(session: SessionWithCounts): SessionListItemDto {
     endedBy: session.endedBy,
     participantCount: session._count.participants,
     messageCount: session._count.messages,
+    fileCount: session._count.fileAttachments,
+    recordingCount: session._count.recordings,
   };
 }
 
@@ -145,6 +197,38 @@ function logWarn(event: string, details: Record<string, unknown>): void {
       ...details,
     }),
   );
+}
+
+function logError(event: string, details: Record<string, unknown>): void {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      event,
+      ...details,
+    }),
+  );
+}
+
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return {
+      name: error.name,
+      message: error.message,
+      prismaCode: error.code,
+      meta: error.meta,
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+    };
+  }
+
+  return {
+    message: String(error),
+  };
 }
 
 async function findSessionDetailsOrThrow(
@@ -311,20 +395,65 @@ export async function joinSession(
   });
 }
 
+export async function getSessionInvite(
+  tokenValue: string,
+): Promise<SessionInviteDto> {
+  const token = normalizeToken(tokenValue);
+  const session = await prisma.session.findUnique({
+    where: { token },
+    include: {
+      participants: {
+        select: {
+          role: true,
+          leftAt: true,
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    throw new AppError(
+      "SESSION_TOKEN_NOT_FOUND",
+      "Session was not found for the provided invite token.",
+      404,
+      "SESSION_ERROR",
+    );
+  }
+
+  return {
+    id: session.id,
+    status: session.status,
+    createdAt: session.createdAt.toISOString(),
+    agentReady: session.participants.some(
+      (participant) =>
+        participant.role === ParticipantRole.AGENT &&
+        participant.leftAt === null,
+    ),
+    customerJoined: session.participants.some(
+      (participant) => participant.role === ParticipantRole.CUSTOMER,
+    ),
+  };
+}
+
 export async function endSession(
   sessionId: string,
-  input: EndSessionRequest,
+  _input: EndSessionRequest,
 ): Promise<SessionDetailsDto> {
   return prisma.$transaction(async (tx) => {
     const existingSession = await findSessionDetailsOrThrow(tx, sessionId);
 
     if (existingSession.status === SessionStatus.ENDED) {
-      logInfo("session.end_idempotent", { sessionId });
-      return mapSessionDetails(existingSession);
+      throw new AppError(
+        "SESSION_ALREADY_ENDED",
+        "Session has already ended.",
+        409,
+        "SESSION_ERROR",
+        { sessionId },
+      );
     }
 
     const endedAt = new Date();
-    const endedBy = normalizeEndedBy(input.endedBy);
+    const endedBy = ParticipantRole.AGENT;
 
     await tx.session.update({
       where: { id: sessionId },
@@ -387,4 +516,166 @@ export async function getSessionById(
   }
 
   return mapSessionDetails(session);
+}
+
+export async function getSessionMessages(
+  sessionId: string,
+): Promise<MessageDto[]> {
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId },
+    select: { id: true },
+  });
+
+  if (!session) {
+    throw new AppError(
+      "SESSION_NOT_FOUND",
+      "Session was not found.",
+      404,
+      "SESSION_ERROR",
+      { sessionId },
+    );
+  }
+
+  const messages = await prisma.message.findMany({
+    where: { sessionId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    include: {
+      attachment: true,
+    },
+  });
+
+  return messages.map(mapMessageWithAttachment);
+}
+
+export async function createSessionMessage(
+  input: CreateSessionMessageInput,
+): Promise<MessageDto> {
+  const content = normalizeMessageContent(input.content);
+
+  return prisma.$transaction(async (tx) => {
+    const participant = await tx.participant.findUnique({
+      where: {
+        id: input.participantId,
+      },
+      include: {
+        session: true,
+      },
+    });
+
+    if (!participant) {
+      logWarn("CHAT_AUTHORIZATION_FAILED", {
+        sessionId: input.sessionId,
+        participantId: input.participantId,
+        reason: "participant_not_found",
+      });
+      throw new AppError(
+        "AUTH_FORBIDDEN",
+        "Participant is not authorized for this session.",
+        403,
+        "AUTHORIZATION_ERROR",
+        { participantId: input.participantId },
+      );
+    }
+
+    if (participant.sessionId !== input.sessionId) {
+      logWarn("CHAT_AUTHORIZATION_FAILED", {
+        sessionId: input.sessionId,
+        participantId: input.participantId,
+        participantSessionId: participant.sessionId,
+        reason: "session_mismatch",
+      });
+      throw new AppError(
+        "AUTH_FORBIDDEN",
+        "Participant does not belong to the requested session.",
+        403,
+        "AUTHORIZATION_ERROR",
+        {
+          participantId: input.participantId,
+          participantSessionId: participant.sessionId,
+          requestedSessionId: input.sessionId,
+        },
+      );
+    }
+
+    if (participant.session.status === SessionStatus.ENDED) {
+      logWarn("CHAT_AUTHORIZATION_FAILED", {
+        sessionId: input.sessionId,
+        participantId: input.participantId,
+        sessionStatus: participant.session.status,
+        reason: "session_ended",
+      });
+      throw new AppError(
+        "SESSION_ALREADY_ENDED",
+        "Ended sessions cannot receive new chat messages.",
+        409,
+        "SESSION_ERROR",
+        { sessionId: input.sessionId },
+      );
+    }
+
+    if (participant.leftAt !== null) {
+      logWarn("CHAT_AUTHORIZATION_FAILED", {
+        sessionId: input.sessionId,
+        participantId: input.participantId,
+        leftAt: participant.leftAt.toISOString(),
+        reason: "participant_left",
+      });
+      throw new AppError(
+        "SESSION_NOT_JOINABLE",
+        "Participants that have left cannot send chat messages.",
+        409,
+        "SESSION_ERROR",
+        { participantId: input.participantId },
+      );
+    }
+
+    logInfo("CHAT_AUTHORIZATION_PASSED", {
+      sessionId: input.sessionId,
+      participantId: input.participantId,
+      participantSessionId: participant.sessionId,
+      role: participant.role,
+      sessionStatus: participant.session.status,
+      participantLeftAt: participant.leftAt,
+    });
+
+    logInfo("CHAT_PERSIST_ATTEMPT", {
+      sessionId: input.sessionId,
+      participantId: input.participantId,
+      role: participant.role,
+      contentLength: content.length,
+    });
+
+    let message: Message;
+
+    try {
+      message = await tx.message.create({
+        data: {
+          sessionId: input.sessionId,
+          participantId: input.participantId,
+          role: participant.role,
+          content,
+        },
+      });
+    } catch (error) {
+      logError("CHAT_PERSIST_FAILED", {
+        sessionId: input.sessionId,
+        participantId: input.participantId,
+        role: participant.role,
+        error: serializeError(error),
+      });
+      throw error;
+    }
+
+    logInfo("session.chat_message_created", {
+      sessionId: message.sessionId,
+      messageId: message.id,
+      participantId: message.participantId,
+      role: message.role,
+    });
+
+    return mapMessageWithAttachment({
+      ...message,
+      attachment: null,
+    });
+  });
 }

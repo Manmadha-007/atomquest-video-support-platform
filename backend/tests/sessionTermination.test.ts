@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import express from "express";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 
-const SESSION_ID = "webrtc-session-1";
-const AGENT_ID = "webrtc-agent-1";
-const CUSTOMER_ID = "webrtc-customer-1";
+const SESSION_ID = "termination-session-1";
+const TOKEN = "termination-token";
+const AGENT_ID = "termination-agent-1";
+const CUSTOMER_ID = "termination-customer-1";
 
 type AckResponse<TPayload = unknown> =
   | {
@@ -29,7 +31,7 @@ async function createTempDatabase(): Promise<{
   directory: string;
   databaseUrl: string;
 }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-webrtc-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-end-"));
   const databasePath = path.join(directory, "test.db").replace(/\\/g, "/");
 
   return {
@@ -155,7 +157,7 @@ async function seedSession(
   await prisma.session.create({
     data: {
       id: SESSION_ID,
-      token: "webrtc-token",
+      token: TOKEN,
       status: "ACTIVE",
       participants: {
         create: [
@@ -268,25 +270,25 @@ function waitForEvent<TPayload>(
   });
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-test("WebRTC signaling validates membership and routes only to the target participant", async () => {
+test("POST /api/sessions/:sessionId/end ends the session and notifies room sockets", async () => {
   const { databaseUrl, directory } = await createTempDatabase();
   process.env.DATABASE_URL = databaseUrl;
 
-  const [{ initializeSocketServer }, { prisma }] = await Promise.all([
-    import("../src/sockets/socketServer.js"),
-    import("../src/config/prisma.js"),
-  ]);
+  const [{ default: sessionRoutes }, { initializeSocketServer }, { prisma }] =
+    await Promise.all([
+      import("../src/routes/sessionRoutes.js"),
+      import("../src/sockets/socketServer.js"),
+      import("../src/config/prisma.js"),
+    ]);
 
   await prepareSchema(prisma);
   await seedSession(prisma);
 
-  const httpServer = createServer();
+  const app = express();
+  app.use(express.json());
+  app.use("/api/sessions", sessionRoutes);
+
+  const httpServer = createServer(app);
   const io = initializeSocketServer(httpServer);
   const url = await listen(httpServer);
   const agentSocket = await connectClient(url);
@@ -298,103 +300,105 @@ test("WebRTC signaling validates membership and routes only to the target partic
       participantId: AGENT_ID,
       role: "AGENT",
     });
-
-    assert.equal(agentJoin.ok, true);
-
-    const unavailableTarget = await emitAck(agentSocket, "webrtc:offer", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      description: {
-        type: "offer",
-        sdp: "v=0\r\n",
-      },
-    });
-
-    assert.equal(unavailableTarget.ok, false);
-    assert.equal(unavailableTarget.error.code, "TARGET_NOT_AVAILABLE");
-
     const customerJoin = await emitAck(customerSocket, "session:join", {
       sessionId: SESSION_ID,
       participantId: CUSTOMER_ID,
       role: "CUSTOMER",
     });
 
+    assert.equal(agentJoin.ok, true);
     assert.equal(customerJoin.ok, true);
 
-    let senderOfferCount = 0;
-    agentSocket.on("webrtc:offer", () => {
-      senderOfferCount += 1;
+    const agentEnded = waitForEvent<Record<string, unknown>>(
+      agentSocket,
+      "session:ended",
+    );
+    const customerEnded = waitForEvent<Record<string, unknown>>(
+      customerSocket,
+      "session:ended",
+    );
+    const endResponse = await fetch(`${url}/api/sessions/${SESSION_ID}/end`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ endedBy: "CUSTOMER_SHOULD_BE_IGNORED" }),
     });
 
-    const offerReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:offer",
+    assert.equal(endResponse.status, 200);
+
+    const body = (await endResponse.json()) as {
+      session: {
+        id: string;
+        status: string;
+        endedAt: string | null;
+        endedBy: string | null;
+        participants: Array<{ id: string; leftAt: string | null }>;
+      };
+    };
+
+    assert.equal(body.session.id, SESSION_ID);
+    assert.equal(body.session.status, "ENDED");
+    assert.equal(body.session.endedBy, "AGENT");
+    assert.ok(body.session.endedAt);
+    assert.equal(
+      body.session.participants.every((participant) => participant.leftAt),
+      true,
     );
-    const offerAck = await emitAck<{ messageId: string }>(
-      agentSocket,
-      "webrtc:offer",
+
+    const [agentPayload, customerPayload] = await Promise.all([
+      agentEnded,
+      customerEnded,
+    ]);
+
+    assert.equal(agentPayload["sessionId"], SESSION_ID);
+    assert.equal(customerPayload["sessionId"], SESSION_ID);
+    assert.equal(
+      (agentPayload["session"] as Record<string, unknown>)["status"],
+      "ENDED",
+    );
+
+    const endedSession = await prisma.session.findUniqueOrThrow({
+      where: {
+        id: SESSION_ID,
+      },
+      include: {
+        participants: true,
+      },
+    });
+
+    assert.equal(endedSession.status, "ENDED");
+    assert.equal(endedSession.endedBy, "AGENT");
+    assert.ok(endedSession.endedAt);
+    assert.equal(
+      endedSession.participants.every(
+        (participant) => participant.leftAt !== null,
+      ),
+      true,
+    );
+
+    const duplicateResponse = await fetch(
+      `${url}/api/sessions/${SESSION_ID}/end`,
       {
-        sessionId: SESSION_ID,
-        participantId: AGENT_ID,
-        targetParticipantId: CUSTOMER_ID,
-        description: {
-          type: "offer",
-          sdp: "v=0\r\n",
-        },
+        method: "POST",
       },
     );
+    const duplicateBody = (await duplicateResponse.json()) as {
+      error: { code: string };
+    };
 
-    assert.equal(offerAck.ok, true);
+    assert.equal(duplicateResponse.status, 409);
+    assert.equal(duplicateBody.error.code, "SESSION_ALREADY_ENDED");
 
-    const routedOffer = await offerReceived;
-
-    assert.equal(routedOffer["participantId"], AGENT_ID);
-    assert.equal(routedOffer["targetParticipantId"], CUSTOMER_ID);
-    assert.equal(routedOffer["messageId"], offerAck.data.messageId);
-
-    await wait(50);
-    assert.equal(senderOfferCount, 0);
-
-    const answerReceived = waitForEvent<Record<string, unknown>>(
-      agentSocket,
-      "webrtc:answer",
-    );
-    const answerAck = await emitAck(customerSocket, "webrtc:answer", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-      targetParticipantId: AGENT_ID,
-      description: {
-        type: "answer",
-        sdp: "v=0\r\n",
-      },
+    const missingResponse = await fetch(`${url}/api/sessions/missing/end`, {
+      method: "POST",
     });
+    const missingBody = (await missingResponse.json()) as {
+      error: { code: string };
+    };
 
-    assert.equal(answerAck.ok, true);
-    assert.equal((await answerReceived)["participantId"], CUSTOMER_ID);
-
-    const iceReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:ice-candidate",
-    );
-    const iceAck = await emitAck(agentSocket, "webrtc:ice-candidate", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      candidate: null,
-    });
-
-    assert.equal(iceAck.ok, true);
-    assert.equal((await iceReceived)["candidate"], null);
-
-    await emitAck(agentSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-    });
-    await emitAck(customerSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-    });
+    assert.equal(missingResponse.status, 404);
+    assert.equal(missingBody.error.code, "SESSION_NOT_FOUND");
   } finally {
     agentSocket.disconnect();
     customerSocket.disconnect();

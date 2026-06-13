@@ -5,9 +5,27 @@ export {
   requestCameraMicrophone,
   stopMediaStream,
 } from "./mediaTransport";
+export {
+  AtomQuestCallRecorder,
+  getSupportedRecordingMimeType,
+} from "./callRecorder";
+export {
+  getCallMediaKey,
+  releasePreJoinMedia,
+  retainPreJoinMedia,
+  retryPreJoinMedia,
+  takePreJoinMediaForCall,
+  transferPreJoinMediaToCall,
+} from "./preJoinMedia";
+export type {
+  DeviceAccessResult,
+  DeviceAccessStatus,
+  PreJoinMediaResult,
+} from "./preJoinMedia";
 export { AtomQuestPeerConnectionService } from "./peerConnectionService";
 export type {
   AtomQuestPeerConnectionOptions,
+  CallMediaState,
   ConnectionStateListener,
 } from "./peerConnectionService";
 export {
@@ -19,8 +37,14 @@ export type {
   ActiveSessionParticipant,
   ClientToServerEvents,
   ParticipantPresenceStatus,
+  RecordingUpdatePayload,
+  SessionChatNewPayload,
+  SessionChatSendPayload,
+  SessionEndedPayload,
   ServerToClientEvents,
   SessionJoinedPayload,
+  SessionLeavePayload,
+  SessionLeftPayload,
   SessionJoinPayload,
   SocketAck,
   SocketAckResponse,

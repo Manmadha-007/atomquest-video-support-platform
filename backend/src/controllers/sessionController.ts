@@ -1,12 +1,17 @@
 import type { Request, Response } from "express";
+import { RecordingStopReason } from "@prisma/client";
 
 import {
   createSession as createSessionService,
   endSession as endSessionService,
   getSessionById as getSessionByIdService,
+  getSessionInvite as getSessionInviteService,
+  getSessionMessages as getSessionMessagesService,
   getSessions as getSessionsService,
   joinSession as joinSessionService,
 } from "../services/sessionService.js";
+import { broadcastSessionEnded } from "../sockets/sessionBroadcaster.js";
+import { stopActiveRecordingForSession } from "../services/recordingService.js";
 import {
   AppError,
   type ApiErrorResponse,
@@ -15,6 +20,8 @@ import {
   type EndSessionRequest,
   type EndSessionResponse,
   type GetSessionResponse,
+  type GetSessionMessagesResponse,
+  type GetSessionInviteResponse,
   type GetSessionsResponse,
   type JoinSessionRequest,
   type JoinSessionResponse,
@@ -23,6 +30,9 @@ import {
 type EmptyParams = Record<string, never>;
 type SessionIdParams = {
   sessionId: string;
+};
+type SessionTokenParams = {
+  token: string;
 };
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{24,128}$/;
@@ -110,10 +120,7 @@ function validateCreateSessionRequest(body: unknown): CreateSessionRequest {
   };
 }
 
-function validateJoinSessionRequest(body: unknown): JoinSessionRequest {
-  const validatedBody = validateRequestBody(body);
-  const token = validatedBody.token;
-
+function validateToken(token: unknown): string {
   if (token === undefined) {
     throw new AppError(
       "VALIDATION_MISSING_FIELD",
@@ -146,8 +153,14 @@ function validateJoinSessionRequest(body: unknown): JoinSessionRequest {
     );
   }
 
+  return normalizedToken;
+}
+
+function validateJoinSessionRequest(body: unknown): JoinSessionRequest {
+  const validatedBody = validateRequestBody(body);
+
   return {
-    token: normalizedToken,
+    token: validateToken(validatedBody.token),
   };
 }
 
@@ -217,6 +230,20 @@ export async function joinSession(
   }
 }
 
+export async function getSessionInvite(
+  req: Request<SessionTokenParams, GetSessionInviteResponse | ApiErrorResponse>,
+  res: Response<GetSessionInviteResponse | ApiErrorResponse>,
+): Promise<void> {
+  try {
+    const token = validateToken(req.params.token);
+    const session = await getSessionInviteService(token);
+
+    res.status(200).json({ session });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+}
+
 export async function endSession(
   req: Request<SessionIdParams, EndSessionResponse | ApiErrorResponse, unknown>,
   res: Response<EndSessionResponse | ApiErrorResponse>,
@@ -226,6 +253,11 @@ export async function endSession(
     const input = validateEndSessionRequest(req.body);
     const session = await endSessionService(sessionId, input);
 
+    await stopActiveRecordingForSession(
+      sessionId,
+      RecordingStopReason.SESSION_ENDED,
+    );
+    broadcastSessionEnded(session);
     res.status(200).json({ session });
   } catch (error) {
     sendErrorResponse(res, error);
@@ -254,6 +286,20 @@ export async function getSessionById(
     const session = await getSessionByIdService(sessionId);
 
     res.status(200).json({ session });
+  } catch (error) {
+    sendErrorResponse(res, error);
+  }
+}
+
+export async function getSessionMessages(
+  req: Request<SessionIdParams, GetSessionMessagesResponse | ApiErrorResponse>,
+  res: Response<GetSessionMessagesResponse | ApiErrorResponse>,
+): Promise<void> {
+  try {
+    const sessionId = validateSessionId(req.params.sessionId);
+    const messages = await getSessionMessagesService(sessionId);
+
+    res.status(200).json({ messages });
   } catch (error) {
     sendErrorResponse(res, error);
   }

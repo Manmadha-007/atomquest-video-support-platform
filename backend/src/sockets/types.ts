@@ -1,6 +1,11 @@
 import type { Participant } from "@prisma/client";
 import type { Server, Socket } from "socket.io";
 import type {
+  MessageDto,
+  RecordingDto,
+  SessionDetailsDto,
+} from "../types/sessionTypes.js";
+import type {
   WebRtcAnswerPayload,
   WebRtcIceCandidatePayload,
   WebRtcOfferPayload,
@@ -18,6 +23,24 @@ export interface SessionJoinPayload {
 export interface SessionLeavePayload {
   sessionId: string;
   participantId?: string;
+}
+
+export interface SessionChatSendPayload {
+  sessionId: string;
+  participantId: string;
+  content: string;
+}
+
+export interface SessionChatNewPayload {
+  sessionId: string;
+  room: string;
+  message: MessageDto;
+}
+
+export interface RecordingUpdatePayload {
+  sessionId: string;
+  room: string;
+  recording: RecordingDto;
 }
 
 export type ParticipantPresenceStatus = "online" | "reconnecting" | "offline";
@@ -79,6 +102,16 @@ export interface ParticipantUpdatePayload {
   reason?: ParticipantLeaveReason;
 }
 
+export interface SessionEndedPayload {
+  sessionId: string;
+  room: string;
+  session: SessionDetailsDto;
+  endedAt: string;
+  endedBy: string;
+  activeParticipants: ActiveSessionParticipant[];
+  activeCount: number;
+}
+
 export type SocketErrorCode =
   | "VALIDATION_ERROR"
   | "SESSION_NOT_FOUND"
@@ -88,6 +121,8 @@ export type SocketErrorCode =
   | "PARTICIPANT_LEFT"
   | "ROLE_MISMATCH"
   | "TARGET_NOT_AVAILABLE"
+  | "AUTH_FORBIDDEN"
+  | "PERSISTENCE_ERROR"
   | "INTERNAL_ERROR";
 
 export interface SocketErrorPayload {
@@ -119,6 +154,10 @@ export interface ClientToServerEvents {
     payload: SessionLeavePayload,
     ack?: SocketAck<SessionLeftPayload>,
   ) => void;
+  "session:chat:send": (
+    payload: SessionChatSendPayload,
+    ack?: SocketAck<SessionChatNewPayload>,
+  ) => void;
   "webrtc:offer": (
     payload: WebRtcOfferPayload,
     ack?: SocketAck<WebRtcSignalAckPayload>,
@@ -136,6 +175,9 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
   "session:joined": (payload: SessionJoinedPayload) => void;
   "session:left": (payload: SessionLeftPayload) => void;
+  "session:ended": (payload: SessionEndedPayload) => void;
+  "session:chat:new": (payload: SessionChatNewPayload) => void;
+  "recording:update": (payload: RecordingUpdatePayload) => void;
   "participant:update": (payload: ParticipantUpdatePayload) => void;
   "webrtc:offer": (payload: WebRtcOfferPayload) => void;
   "webrtc:answer": (payload: WebRtcAnswerPayload) => void;

@@ -2,8 +2,14 @@ import { io, type Socket } from "socket.io-client";
 
 import type {
   ClientToServerEvents,
+  RecordingUpdatePayload,
   ServerToClientEvents,
+  SessionChatNewPayload,
+  SessionChatSendPayload,
+  SessionEndedPayload,
   SessionJoinedPayload,
+  SessionLeavePayload,
+  SessionLeftPayload,
   SessionJoinPayload,
   SocketAck,
   SocketErrorPayload,
@@ -33,6 +39,26 @@ export interface WebRtcSignalingClientOptions {
   url?: string;
   ackTimeoutMs?: number;
   socket?: Socket<ServerToClientEvents, ClientToServerEvents>;
+}
+
+interface SocketDebugContext {
+  sendEvent: "CHAT_SEND";
+  ackEvent: "CHAT_ACK";
+  sessionId: string;
+  participantId: string;
+  emittedPayload: SessionChatSendPayload;
+}
+
+function logSocketDebug(
+  event: "CHAT_SEND" | "CHAT_ACK" | "CHAT_RECEIVED",
+  details: Record<string, unknown>,
+): void {
+  console.info(
+    JSON.stringify({
+      event,
+      ...details,
+    }),
+  );
 }
 
 export class WebRtcSignalingClient {
@@ -102,6 +128,31 @@ export class WebRtcSignalingClient {
     });
   }
 
+  public async leaveSession(
+    payload: SessionLeavePayload,
+  ): Promise<SessionLeftPayload> {
+    return this.emitWithAck((ack) => {
+      this.socket.emit("session:leave", payload, ack);
+    });
+  }
+
+  public async sendChatMessage(
+    payload: SessionChatSendPayload,
+  ): Promise<SessionChatNewPayload> {
+    return this.emitWithAck(
+      (ack) => {
+        this.socket.emit("session:chat:send", payload, ack);
+      },
+      {
+        sendEvent: "CHAT_SEND",
+        ackEvent: "CHAT_ACK",
+        sessionId: payload.sessionId,
+        participantId: payload.participantId,
+        emittedPayload: payload,
+      },
+    );
+  }
+
   public async sendOffer(
     payload: WebRtcOfferPayload,
   ): Promise<WebRtcSignalAckPayload> {
@@ -158,20 +209,82 @@ export class WebRtcSignalingClient {
     };
   }
 
+  public onSessionEnded(
+    handler: (payload: SessionEndedPayload) => void,
+  ): () => void {
+    this.socket.on("session:ended", handler);
+    return () => {
+      this.socket.off("session:ended", handler);
+    };
+  }
+
+  public onChatMessage(
+    handler: (payload: SessionChatNewPayload) => void,
+  ): () => void {
+    const handleChatMessage = (payload: SessionChatNewPayload) => {
+      logSocketDebug("CHAT_RECEIVED", {
+        socketId: this.socket.id ?? null,
+        sessionId: payload.sessionId,
+        participantId: payload.message.participantId,
+        receivedPayload: payload,
+      });
+      handler(payload);
+    };
+
+    this.socket.on("session:chat:new", handleChatMessage);
+    return () => {
+      this.socket.off("session:chat:new", handleChatMessage);
+    };
+  }
+
+  public onRecordingUpdate(
+    handler: (payload: RecordingUpdatePayload) => void,
+  ): () => void {
+    this.socket.on("recording:update", handler);
+    return () => {
+      this.socket.off("recording:update", handler);
+    };
+  }
+
   private async emitWithAck<TPayload>(
     emit: (ack: SocketAck<TPayload>) => void,
+    debugContext?: SocketDebugContext,
   ): Promise<TPayload> {
     await this.connect();
 
     return new Promise<TPayload>((resolve, reject) => {
       let settled = false;
+
+      if (debugContext) {
+        logSocketDebug(debugContext.sendEvent, {
+          socketId: this.socket.id ?? null,
+          sessionId: debugContext.sessionId,
+          participantId: debugContext.participantId,
+          emittedPayload: debugContext.emittedPayload,
+        });
+      }
+
       const timeoutId = setTimeout(() => {
         if (settled) {
           return;
         }
 
         settled = true;
-        reject(new Error("Timed out waiting for signaling acknowledgement."));
+        const timeoutError = new Error(
+          "Timed out waiting for signaling acknowledgement.",
+        );
+
+        if (debugContext) {
+          logSocketDebug(debugContext.ackEvent, {
+            socketId: this.socket.id ?? null,
+            sessionId: debugContext.sessionId,
+            participantId: debugContext.participantId,
+            ackResponse: null,
+            error: timeoutError.message,
+          });
+        }
+
+        reject(timeoutError);
       }, this.ackTimeoutMs);
 
       emit((response) => {
@@ -181,6 +294,15 @@ export class WebRtcSignalingClient {
 
         settled = true;
         clearTimeout(timeoutId);
+
+        if (debugContext) {
+          logSocketDebug(debugContext.ackEvent, {
+            socketId: this.socket.id ?? null,
+            sessionId: debugContext.sessionId,
+            participantId: debugContext.participantId,
+            ackResponse: response,
+          });
+        }
 
         if (response.ok) {
           resolve(response.data);

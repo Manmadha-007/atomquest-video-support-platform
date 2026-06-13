@@ -1,6 +1,7 @@
-import { SessionStatus } from "@prisma/client";
+import { RecordingStopReason, SessionStatus } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
+import { stopActiveRecordingForSession } from "../services/recordingService.js";
 import {
   participantPresenceRegistry,
   type JoinPresenceResult,
@@ -491,6 +492,18 @@ function handleLeaveSession(
     reason: leaveResult.reason,
     activeCount: leaveResult.activeCount,
   });
+
+  if (leaveResult.participant.role === "CUSTOMER") {
+    void stopActiveRecordingForSession(
+      leaveResult.sessionId,
+      RecordingStopReason.CUSTOMER_DISCONNECTED,
+    ).catch((error) => {
+      logError("recording.customer_leave_stop_failed", {
+        sessionId: leaveResult.sessionId,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    });
+  }
 }
 
 function handleReconnectGraceExpired(
@@ -524,6 +537,18 @@ function handleReconnectGraceExpired(
     reason: result.reason,
     activeCount: result.activeCount,
   });
+
+  if (result.participant.role === "CUSTOMER") {
+    void stopActiveRecordingForSession(
+      result.sessionId,
+      RecordingStopReason.CUSTOMER_DISCONNECTED,
+    ).catch((error) => {
+      logError("recording.customer_disconnect_stop_failed", {
+        sessionId: result.sessionId,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    });
+  }
 }
 
 function handleDisconnect(

@@ -1,7 +1,9 @@
 import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 
+import { registerChatHandlers } from "./chatHandlers.js";
 import { registerSessionHandlers } from "./sessionHandlers.js";
+import { registerSessionBroadcaster } from "./sessionBroadcaster.js";
 import { registerWebRtcSignalingHandlers } from "../webrtc/signalingHandlers.js";
 import type {
   ClientToServerEvents,
@@ -49,6 +51,8 @@ export function initializeSocketServer(httpServer: HttpServer): SocketServer {
     },
   });
 
+  registerSessionBroadcaster(io);
+
   io.on("connection", (socket) => {
     logInfo("socket.connected", {
       socketId: socket.id,
@@ -63,6 +67,7 @@ export function initializeSocketServer(httpServer: HttpServer): SocketServer {
     });
 
     registerSessionHandlers(io, socket);
+    registerChatHandlers(io, socket);
     registerWebRtcSignalingHandlers(io, socket);
   });
 

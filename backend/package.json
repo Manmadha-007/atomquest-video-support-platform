@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "test": "tsx --test tests/presenceRegistry.test.ts tests/webrtcSignaling.test.ts",
+    "test": "tsx --test tests/presenceRegistry.test.ts tests/webrtcSignaling.test.ts tests/sessionTermination.test.ts tests/sessionChat.test.ts tests/sessionInvite.test.ts tests/recording.test.ts tests/fileAttachment.test.ts",
     "start": "node dist/index.js"
   },
   "keywords": [],

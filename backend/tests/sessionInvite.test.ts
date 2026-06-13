@@ -5,31 +5,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
+import express from "express";
 
-const SESSION_ID = "webrtc-session-1";
-const AGENT_ID = "webrtc-agent-1";
-const CUSTOMER_ID = "webrtc-customer-1";
-
-type AckResponse<TPayload = unknown> =
-  | {
-      ok: true;
-      data: TPayload;
-    }
-  | {
-      ok: false;
-      error: {
-        code: string;
-        message: string;
-        details?: Record<string, unknown>;
-      };
-    };
+const SESSION_ID = "invite-session-1";
+const TOKEN = "invite-token-12345678901234567890";
+const AGENT_ID = "invite-agent-1";
 
 async function createTempDatabase(): Promise<{
   directory: string;
   databaseUrl: string;
 }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-webrtc-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-invite-"));
   const databasePath = path.join(directory, "test.db").replace(/\\/g, "/");
 
   return {
@@ -149,30 +135,6 @@ async function prepareSchema(
   );
 }
 
-async function seedSession(
-  prisma: typeof import("../src/config/prisma.js").prisma,
-): Promise<void> {
-  await prisma.session.create({
-    data: {
-      id: SESSION_ID,
-      token: "webrtc-token",
-      status: "ACTIVE",
-      participants: {
-        create: [
-          {
-            id: AGENT_ID,
-            role: "AGENT",
-          },
-          {
-            id: CUSTOMER_ID,
-            role: "CUSTOMER",
-          },
-        ],
-      },
-    },
-  });
-}
-
 async function listen(httpServer: HttpServer): Promise<string> {
   await new Promise<void>((resolve) => {
     httpServer.listen(0, "127.0.0.1", resolve);
@@ -200,205 +162,79 @@ async function closeServer(httpServer: HttpServer): Promise<void> {
   });
 }
 
-function connectClient(url: string): Promise<ClientSocket> {
-  const socket = createClient(url, {
-    forceNew: true,
-    reconnection: false,
-    transports: ["websocket"],
-  });
-
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out waiting for Socket.IO client connection."));
-    }, 1_000);
-
-    const cleanup = () => {
-      clearTimeout(timeoutId);
-      socket.off("connect", handleConnect);
-      socket.off("connect_error", handleConnectError);
-    };
-
-    const handleConnect = () => {
-      cleanup();
-      resolve(socket);
-    };
-
-    const handleConnectError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-
-    socket.once("connect", handleConnect);
-    socket.once("connect_error", handleConnectError);
-  });
-}
-
-function emitAck<TPayload = unknown>(
-  socket: ClientSocket,
-  event: string,
-  payload: unknown,
-): Promise<AckResponse<TPayload>> {
-  return new Promise((resolve) => {
-    socket.emit(event, payload, resolve);
-  });
-}
-
-function waitForEvent<TPayload>(
-  socket: ClientSocket,
-  event: string,
-): Promise<TPayload> {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for ${event}.`));
-    }, 1_000);
-
-    const cleanup = () => {
-      clearTimeout(timeoutId);
-      socket.off(event, handleEvent);
-    };
-
-    const handleEvent = (payload: TPayload) => {
-      cleanup();
-      resolve(payload);
-    };
-
-    socket.once(event, handleEvent);
-  });
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-test("WebRTC signaling validates membership and routes only to the target participant", async () => {
+test("invite inspection does not consume the customer seat", async () => {
   const { databaseUrl, directory } = await createTempDatabase();
   process.env.DATABASE_URL = databaseUrl;
 
-  const [{ initializeSocketServer }, { prisma }] = await Promise.all([
-    import("../src/sockets/socketServer.js"),
+  const [{ default: sessionRoutes }, { prisma }] = await Promise.all([
+    import("../src/routes/sessionRoutes.js"),
     import("../src/config/prisma.js"),
   ]);
 
   await prepareSchema(prisma);
-  await seedSession(prisma);
-
-  const httpServer = createServer();
-  const io = initializeSocketServer(httpServer);
-  const url = await listen(httpServer);
-  const agentSocket = await connectClient(url);
-  const customerSocket = await connectClient(url);
-
-  try {
-    const agentJoin = await emitAck(agentSocket, "session:join", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      role: "AGENT",
-    });
-
-    assert.equal(agentJoin.ok, true);
-
-    const unavailableTarget = await emitAck(agentSocket, "webrtc:offer", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      description: {
-        type: "offer",
-        sdp: "v=0\r\n",
-      },
-    });
-
-    assert.equal(unavailableTarget.ok, false);
-    assert.equal(unavailableTarget.error.code, "TARGET_NOT_AVAILABLE");
-
-    const customerJoin = await emitAck(customerSocket, "session:join", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-      role: "CUSTOMER",
-    });
-
-    assert.equal(customerJoin.ok, true);
-
-    let senderOfferCount = 0;
-    agentSocket.on("webrtc:offer", () => {
-      senderOfferCount += 1;
-    });
-
-    const offerReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:offer",
-    );
-    const offerAck = await emitAck<{ messageId: string }>(
-      agentSocket,
-      "webrtc:offer",
-      {
-        sessionId: SESSION_ID,
-        participantId: AGENT_ID,
-        targetParticipantId: CUSTOMER_ID,
-        description: {
-          type: "offer",
-          sdp: "v=0\r\n",
+  await prisma.session.create({
+    data: {
+      id: SESSION_ID,
+      token: TOKEN,
+      status: "ACTIVE",
+      participants: {
+        create: {
+          id: AGENT_ID,
+          role: "AGENT",
         },
       },
+    },
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use("/api/sessions", sessionRoutes);
+
+  const httpServer = createServer(app);
+  const url = await listen(httpServer);
+
+  try {
+    const inviteResponse = await fetch(
+      `${url}/api/sessions/invites/${TOKEN}`,
     );
+    const inviteBody = (await inviteResponse.json()) as {
+      session: {
+        id: string;
+        status: string;
+        agentReady: boolean;
+        customerJoined: boolean;
+      };
+    };
 
-    assert.equal(offerAck.ok, true);
+    assert.equal(inviteResponse.status, 200);
+    assert.equal(inviteBody.session.id, SESSION_ID);
+    assert.equal(inviteBody.session.status, "ACTIVE");
+    assert.equal(inviteBody.session.agentReady, true);
+    assert.equal(inviteBody.session.customerJoined, false);
+    assert.equal(await prisma.participant.count(), 1);
 
-    const routedOffer = await offerReceived;
-
-    assert.equal(routedOffer["participantId"], AGENT_ID);
-    assert.equal(routedOffer["targetParticipantId"], CUSTOMER_ID);
-    assert.equal(routedOffer["messageId"], offerAck.data.messageId);
-
-    await wait(50);
-    assert.equal(senderOfferCount, 0);
-
-    const answerReceived = waitForEvent<Record<string, unknown>>(
-      agentSocket,
-      "webrtc:answer",
-    );
-    const answerAck = await emitAck(customerSocket, "webrtc:answer", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-      targetParticipantId: AGENT_ID,
-      description: {
-        type: "answer",
-        sdp: "v=0\r\n",
+    const joinResponse = await fetch(`${url}/api/sessions/join`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({ token: TOKEN }),
     });
 
-    assert.equal(answerAck.ok, true);
-    assert.equal((await answerReceived)["participantId"], CUSTOMER_ID);
+    assert.equal(joinResponse.status, 200);
+    assert.equal(await prisma.participant.count(), 2);
 
-    const iceReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:ice-candidate",
+    const usedInviteResponse = await fetch(
+      `${url}/api/sessions/invites/${TOKEN}`,
     );
-    const iceAck = await emitAck(agentSocket, "webrtc:ice-candidate", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      candidate: null,
-    });
+    const usedInviteBody = (await usedInviteResponse.json()) as {
+      session: {
+        customerJoined: boolean;
+      };
+    };
 
-    assert.equal(iceAck.ok, true);
-    assert.equal((await iceReceived)["candidate"], null);
-
-    await emitAck(agentSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-    });
-    await emitAck(customerSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-    });
+    assert.equal(usedInviteBody.session.customerJoined, true);
   } finally {
-    agentSocket.disconnect();
-    customerSocket.disconnect();
-    io.close();
     await closeServer(httpServer);
     await prisma.$disconnect();
     await rm(directory, {

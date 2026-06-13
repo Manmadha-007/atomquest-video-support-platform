@@ -1,7 +1,6 @@
 import {
   AlertCircle,
   ArrowRight,
-  CheckCircle2,
   KeyRound,
   Loader2,
   ShieldCheck,
@@ -9,54 +8,20 @@ import {
   Video,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { getSessionApiErrorMessage, joinSession } from "../api/sessions";
-import type { JoinSessionResponse } from "../types/session";
+import type { Participant } from "../types/session";
 
-type JoinState = "idle" | "loading" | "success" | "error";
-
-function formatReference(value: string): string {
-  if (value.length <= 18) {
-    return value;
-  }
-
-  return `${value.slice(0, 10)}...${value.slice(-6)}`;
-}
+type JoinState = "idle" | "loading" | "error";
 
 function StatusPanel({
   joinState,
   errorMessage,
-  joinedSession,
 }: {
   joinState: JoinState;
   errorMessage: string | null;
-  joinedSession: JoinSessionResponse | null;
 }) {
-  if (joinState === "success" && joinedSession) {
-    return (
-      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-200">
-        <div className="flex gap-3">
-          <CheckCircle2 className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
-          <div>
-            <p className="font-semibold">You joined the session</p>
-            <p className="mt-1 text-sm leading-6 text-emerald-700 dark:text-emerald-200/80">
-              Customer participant{" "}
-              <span className="font-mono">
-                {formatReference(joinedSession.participant.id)}
-              </span>{" "}
-              joined with invite token{" "}
-              <span className="font-mono">
-                {formatReference(joinedSession.session.token)}
-              </span>
-              .
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   if (joinState === "error" && errorMessage) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800 dark:border-red-400/30 dark:bg-red-400/10 dark:text-red-200">
@@ -91,16 +56,40 @@ function StatusPanel({
   );
 }
 
+function getAgentParticipant(participants: Participant[]): Participant | null {
+  return (
+    participants.find((participant) => participant.role === "AGENT") ?? null
+  );
+}
+
+function buildCustomerCallPath({
+  participantId,
+  sessionId,
+  targetParticipantId,
+}: {
+  sessionId: string;
+  participantId: string;
+  targetParticipantId: string;
+}): string {
+  const params = new URLSearchParams({
+    sessionId,
+    participantId,
+    targetParticipantId,
+    role: "CUSTOMER",
+    initiator: "false",
+  });
+
+  return `/call?${params.toString()}`;
+}
+
 export default function CustomerJoinPage() {
   const { token: routeToken } = useParams<{ token: string }>();
+  const navigate = useNavigate();
   const [joinState, setJoinState] = useState<JoinState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [joinedSession, setJoinedSession] =
-    useState<JoinSessionResponse | null>(null);
 
   const token = useMemo(() => routeToken ?? "", [routeToken]);
   const isLoading = joinState === "loading";
-  const isSuccess = joinState === "success";
   const hasToken = token.length > 0;
 
   const handleJoinSession = async () => {
@@ -112,12 +101,25 @@ export default function CustomerJoinPage() {
 
     setJoinState("loading");
     setErrorMessage(null);
-    setJoinedSession(null);
 
     try {
       const response = await joinSession({ token });
-      setJoinedSession(response);
-      setJoinState("success");
+      const agentParticipant = getAgentParticipant(response.session.participants);
+
+      if (!agentParticipant) {
+        throw new Error("Agent participant was not found for this session.");
+      }
+
+      navigate(
+        buildCustomerCallPath({
+          sessionId: response.session.id,
+          participantId: response.participant.id,
+          targetParticipantId: agentParticipant.id,
+        }),
+        {
+          replace: true,
+        },
+      );
     } catch (error) {
       setErrorMessage(getSessionApiErrorMessage(error));
       setJoinState("error");
@@ -180,37 +182,27 @@ export default function CustomerJoinPage() {
           <div className="mt-6">
             <StatusPanel
               errorMessage={errorMessage}
-              joinedSession={joinedSession}
               joinState={joinState}
             />
           </div>
 
-          <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
               className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-5 text-sm font-semibold text-white shadow-lg shadow-zinc-300 transition hover:-translate-y-0.5 hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:translate-y-0 dark:bg-white dark:text-zinc-950 dark:shadow-black/30 dark:hover:bg-zinc-200 dark:focus:ring-offset-zinc-950"
-              disabled={isLoading || !hasToken || isSuccess}
+              disabled={isLoading || !hasToken}
               onClick={handleJoinSession}
               type="button"
             >
               {isLoading ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              ) : isSuccess ? (
-                <CheckCircle2 className="size-4" aria-hidden="true" />
               ) : (
                 <ShieldCheck className="size-4" aria-hidden="true" />
               )}
-              {isLoading ? "Joining..." : isSuccess ? "Joined" : "Join Session"}
-              {!isLoading && !isSuccess && (
+              {isLoading ? "Joining..." : "Join Session"}
+              {!isLoading && (
                 <ArrowRight className="size-4" aria-hidden="true" />
               )}
             </button>
-
-            <Link
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-950/30 dark:text-zinc-200 dark:hover:bg-zinc-800 dark:focus:ring-offset-zinc-950"
-              to="/"
-            >
-              Agent dashboard
-            </Link>
           </div>
         </div>
       </section>

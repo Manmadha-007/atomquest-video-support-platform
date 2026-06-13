@@ -2,6 +2,16 @@ export type SessionStatus = "ACTIVE" | "ENDED";
 
 export type ParticipantRole = "AGENT" | "CUSTOMER";
 
+export type RecordingStatus = "RECORDING" | "PROCESSING" | "READY" | "FAILED";
+
+export type MessageKind = "TEXT" | "FILE";
+
+export type RecordingStopReason =
+  | "AGENT"
+  | "SESSION_ENDED"
+  | "CUSTOMER_DISCONNECTED"
+  | "RECOVERY";
+
 export type ApiErrorCategory =
   | "VALIDATION_ERROR"
   | "SESSION_ERROR"
@@ -23,6 +33,14 @@ export type ApiErrorCode =
   | "SESSION_INVALID_STATE_TRANSITION"
   | "SESSION_PARTICIPANT_LIMIT_REACHED"
   | "SESSION_CONCURRENT_MODIFICATION"
+  | "RECORDING_NOT_FOUND"
+  | "RECORDING_ALREADY_ACTIVE"
+  | "RECORDING_INVALID_STATE"
+  | "RECORDING_STORAGE_ERROR"
+  | "FILE_ATTACHMENT_NOT_FOUND"
+  | "FILE_UPLOAD_INVALID_TYPE"
+  | "FILE_UPLOAD_TOO_LARGE"
+  | "FILE_STORAGE_ERROR"
   | "INTERNAL_SERVER_ERROR";
 
 export interface SessionListItem {
@@ -34,6 +52,8 @@ export interface SessionListItem {
   endedBy: string | null;
   participantCount: number;
   messageCount: number;
+  fileCount: number;
+  recordingCount: number;
 }
 
 export interface Participant {
@@ -47,9 +67,43 @@ export interface Participant {
 export interface SessionMessage {
   id: string;
   sessionId: string;
-  sender: string;
+  participantId: string;
+  role: ParticipantRole;
+  kind: MessageKind;
   content: string;
+  attachment: FileAttachment | null;
   createdAt: string;
+}
+
+export interface FileAttachment {
+  id: string;
+  sessionId: string;
+  participantId: string;
+  messageId: string;
+  originalName: string;
+  mimeType: string;
+  extension: string;
+  sizeBytes: number;
+  downloadUrl: string;
+  createdAt: string;
+}
+
+export interface Recording {
+  id: string;
+  sessionId: string;
+  startedByParticipantId: string;
+  status: RecordingStatus;
+  stopReason: RecordingStopReason | null;
+  mimeType: string;
+  startedAt: string;
+  stoppedAt: string | null;
+  readyAt: string | null;
+  durationMs: number | null;
+  sizeBytes: number | null;
+  downloadUrl: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SessionDetails {
@@ -61,10 +115,29 @@ export interface SessionDetails {
   endedBy: string | null;
   participants: Participant[];
   messages: SessionMessage[];
+  sharedFiles: FileAttachment[];
+  recordings: Recording[];
 }
 
 export interface GetSessionsResponse {
   sessions: SessionListItem[];
+}
+
+export interface GetSessionResponse {
+  session: SessionDetails;
+}
+
+export interface GetSessionMessagesResponse {
+  messages: SessionMessage[];
+}
+
+export interface UploadFileResponse {
+  attachment: FileAttachment;
+  message: SessionMessage;
+}
+
+export interface GetFileAttachmentsResponse {
+  files: FileAttachment[];
 }
 
 export interface CreateSessionResponse {
@@ -75,9 +148,33 @@ export interface JoinSessionRequest {
   token: string;
 }
 
+export interface SessionInvite {
+  id: string;
+  status: SessionStatus;
+  createdAt: string;
+  agentReady: boolean;
+  customerJoined: boolean;
+}
+
 export interface JoinSessionResponse {
   session: SessionDetails;
   participant: Participant;
+}
+
+export interface GetSessionInviteResponse {
+  session: SessionInvite;
+}
+
+export interface EndSessionResponse {
+  session: SessionDetails;
+}
+
+export interface RecordingResponse {
+  recording: Recording;
+}
+
+export interface GetRecordingsResponse {
+  recordings: Recording[];
 }
 
 export interface ApiErrorResponse {

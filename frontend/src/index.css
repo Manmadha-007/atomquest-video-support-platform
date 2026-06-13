@@ -48,3 +48,25 @@ textarea,
 select {
   font: inherit;
 }
+
+@keyframes call-stage-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.call-stage-enter {
+  animation: call-stage-enter 320ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .call-stage-enter {
+    animation: none;
+  }
+}

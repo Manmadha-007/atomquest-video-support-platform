@@ -5,36 +5,26 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import express from "express";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 
-const SESSION_ID = "webrtc-session-1";
-const AGENT_ID = "webrtc-agent-1";
-const CUSTOMER_ID = "webrtc-customer-1";
+const SESSION_ID = "recording-session-1";
+const TOKEN = "recording-token";
+const AGENT_ID = "recording-agent-1";
+const CUSTOMER_ID = "recording-customer-1";
 
-type AckResponse<TPayload = unknown> =
-  | {
-      ok: true;
-      data: TPayload;
-    }
-  | {
-      ok: false;
-      error: {
-        code: string;
-        message: string;
-        details?: Record<string, unknown>;
-      };
-    };
-
-async function createTempDatabase(): Promise<{
+async function createTempWorkspace(): Promise<{
   directory: string;
   databaseUrl: string;
+  storageDirectory: string;
 }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-webrtc-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-recording-"));
   const databasePath = path.join(directory, "test.db").replace(/\\/g, "/");
 
   return {
     directory,
     databaseUrl: `file:${databasePath}`,
+    storageDirectory: path.join(directory, "recordings"),
   };
 }
 
@@ -118,19 +108,7 @@ async function prepareSchema(
     `CREATE UNIQUE INDEX "Session_token_key" ON "Session"("token")`,
   );
   await prisma.$executeRawUnsafe(
-    `CREATE INDEX "Session_status_idx" ON "Session"("status")`,
-  );
-  await prisma.$executeRawUnsafe(
     `CREATE UNIQUE INDEX "Participant_sessionId_role_key" ON "Participant"("sessionId", "role")`,
-  );
-  await prisma.$executeRawUnsafe(
-    `CREATE INDEX "Participant_sessionId_idx" ON "Participant"("sessionId")`,
-  );
-  await prisma.$executeRawUnsafe(
-    `CREATE INDEX "Message_sessionId_createdAt_idx" ON "Message"("sessionId", "createdAt")`,
-  );
-  await prisma.$executeRawUnsafe(
-    `CREATE INDEX "Message_participantId_idx" ON "Message"("participantId")`,
   );
   await prisma.$executeRawUnsafe(
     `CREATE UNIQUE INDEX "Recording_downloadToken_key" ON "Recording"("downloadToken")`,
@@ -147,30 +125,6 @@ async function prepareSchema(
   await prisma.$executeRawUnsafe(
     `CREATE INDEX "FileAttachment_participantId_idx" ON "FileAttachment"("participantId")`,
   );
-}
-
-async function seedSession(
-  prisma: typeof import("../src/config/prisma.js").prisma,
-): Promise<void> {
-  await prisma.session.create({
-    data: {
-      id: SESSION_ID,
-      token: "webrtc-token",
-      status: "ACTIVE",
-      participants: {
-        create: [
-          {
-            id: AGENT_ID,
-            role: "AGENT",
-          },
-          {
-            id: CUSTOMER_ID,
-            role: "CUSTOMER",
-          },
-        ],
-      },
-    },
-  });
 }
 
 async function listen(httpServer: HttpServer): Promise<string> {
@@ -212,18 +166,15 @@ function connectClient(url: string): Promise<ClientSocket> {
       cleanup();
       reject(new Error("Timed out waiting for Socket.IO client connection."));
     }, 1_000);
-
     const cleanup = () => {
       clearTimeout(timeoutId);
       socket.off("connect", handleConnect);
       socket.off("connect_error", handleConnectError);
     };
-
     const handleConnect = () => {
       cleanup();
       resolve(socket);
     };
-
     const handleConnectError = (error: Error) => {
       cleanup();
       reject(error);
@@ -234,11 +185,7 @@ function connectClient(url: string): Promise<ClientSocket> {
   });
 }
 
-function emitAck<TPayload = unknown>(
-  socket: ClientSocket,
-  event: string,
-  payload: unknown,
-): Promise<AckResponse<TPayload>> {
+function emitAck(socket: ClientSocket, event: string, payload: unknown): Promise<unknown> {
   return new Promise((resolve) => {
     socket.emit(event, payload, resolve);
   });
@@ -253,12 +200,10 @@ function waitForEvent<TPayload>(
       cleanup();
       reject(new Error(`Timed out waiting for ${event}.`));
     }, 1_000);
-
     const cleanup = () => {
       clearTimeout(timeoutId);
       socket.off(event, handleEvent);
     };
-
     const handleEvent = (payload: TPayload) => {
       cleanup();
       resolve(payload);
@@ -268,142 +213,212 @@ function waitForEvent<TPayload>(
   });
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+async function waitForReady(
+  url: string,
+  recordingId: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 8_000;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`${url}/api/recordings`);
+    const body = (await response.json()) as {
+      recordings: Array<Record<string, unknown>>;
+    };
+    const recording = body.recordings.find(
+      (candidate) => candidate["id"] === recordingId,
+    );
+
+    if (recording?.["status"] === "READY") {
+      return recording;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error("Timed out waiting for recording to become ready.");
 }
 
-test("WebRTC signaling validates membership and routes only to the target participant", async () => {
-  const { databaseUrl, directory } = await createTempDatabase();
+test("agents record, customers cannot control recording, and ready files download", async () => {
+  const { databaseUrl, directory, storageDirectory } =
+    await createTempWorkspace();
   process.env.DATABASE_URL = databaseUrl;
+  process.env.RECORDING_STORAGE_DIR = storageDirectory;
 
-  const [{ initializeSocketServer }, { prisma }] = await Promise.all([
+  const [
+    { default: recordingRoutes },
+    { default: sessionRoutes },
+    { initializeSocketServer },
+    { prisma },
+  ] = await Promise.all([
+    import("../src/routes/recordingRoutes.js"),
+    import("../src/routes/sessionRoutes.js"),
     import("../src/sockets/socketServer.js"),
     import("../src/config/prisma.js"),
   ]);
 
   await prepareSchema(prisma);
-  await seedSession(prisma);
+  await prisma.session.create({
+    data: {
+      id: SESSION_ID,
+      token: TOKEN,
+      status: "ACTIVE",
+      participants: {
+        create: [
+          { id: AGENT_ID, role: "AGENT" },
+          { id: CUSTOMER_ID, role: "CUSTOMER" },
+        ],
+      },
+    },
+  });
 
-  const httpServer = createServer();
+  const app = express();
+  app.use(express.json());
+  app.use("/api/recordings", recordingRoutes);
+  app.use("/api/sessions", sessionRoutes);
+  const httpServer = createServer(app);
   const io = initializeSocketServer(httpServer);
   const url = await listen(httpServer);
   const agentSocket = await connectClient(url);
   const customerSocket = await connectClient(url);
 
   try {
-    const agentJoin = await emitAck(agentSocket, "session:join", {
+    await emitAck(agentSocket, "session:join", {
       sessionId: SESSION_ID,
       participantId: AGENT_ID,
       role: "AGENT",
     });
-
-    assert.equal(agentJoin.ok, true);
-
-    const unavailableTarget = await emitAck(agentSocket, "webrtc:offer", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      description: {
-        type: "offer",
-        sdp: "v=0\r\n",
-      },
-    });
-
-    assert.equal(unavailableTarget.ok, false);
-    assert.equal(unavailableTarget.error.code, "TARGET_NOT_AVAILABLE");
-
-    const customerJoin = await emitAck(customerSocket, "session:join", {
+    await emitAck(customerSocket, "session:join", {
       sessionId: SESSION_ID,
       participantId: CUSTOMER_ID,
       role: "CUSTOMER",
     });
 
-    assert.equal(customerJoin.ok, true);
-
-    let senderOfferCount = 0;
-    agentSocket.on("webrtc:offer", () => {
-      senderOfferCount += 1;
+    const customerStart = await fetch(`${url}/api/recordings/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: SESSION_ID,
+        participantId: CUSTOMER_ID,
+        mimeType: "video/webm",
+      }),
     });
 
-    const offerReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:offer",
-    );
-    const offerAck = await emitAck<{ messageId: string }>(
+    assert.equal(customerStart.status, 403);
+
+    const agentSeesRecording = waitForEvent<Record<string, unknown>>(
       agentSocket,
-      "webrtc:offer",
-      {
+      "recording:update",
+    );
+    const customerSeesRecording = waitForEvent<Record<string, unknown>>(
+      customerSocket,
+      "recording:update",
+    );
+    const startResponse = await fetch(`${url}/api/recordings/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         sessionId: SESSION_ID,
         participantId: AGENT_ID,
-        targetParticipantId: CUSTOMER_ID,
-        description: {
-          type: "offer",
-          sdp: "v=0\r\n",
+        mimeType: "video/webm",
+      }),
+    });
+    const startBody = (await startResponse.json()) as {
+      recording: { id: string; status: string };
+    };
+
+    assert.equal(startResponse.status, 201);
+    assert.equal(startBody.recording.status, "RECORDING");
+    assert.equal(
+      (
+        (await agentSeesRecording)["recording"] as Record<string, unknown>
+      )["status"],
+      "RECORDING",
+    );
+    assert.equal(
+      (
+        (await customerSeesRecording)["recording"] as Record<string, unknown>
+      )["status"],
+      "RECORDING",
+    );
+
+    const firstChunk = Buffer.from("first-webm-chunk");
+    const secondChunk = Buffer.from("second-webm-chunk");
+
+    for (const [sequence, chunk] of [firstChunk, secondChunk].entries()) {
+      const chunkResponse = await fetch(
+        `${url}/api/recordings/${startBody.recording.id}/chunks/${sequence}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "x-atomquest-participant-id": AGENT_ID,
+          },
+          body: chunk,
         },
+      );
+
+      assert.equal(chunkResponse.status, 200);
+    }
+
+    const stopResponse = await fetch(
+      `${url}/api/recordings/${startBody.recording.id}/stop`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ participantId: AGENT_ID }),
       },
     );
+    const stopBody = (await stopResponse.json()) as {
+      recording: { status: string };
+    };
 
-    assert.equal(offerAck.ok, true);
+    assert.equal(stopResponse.status, 200);
+    assert.equal(stopBody.recording.status, "PROCESSING");
 
-    const routedOffer = await offerReceived;
+    const readyRecording = await waitForReady(url, startBody.recording.id);
+    assert.equal(readyRecording["sizeBytes"], firstChunk.length + secondChunk.length);
+    assert.equal(typeof readyRecording["downloadUrl"], "string");
 
-    assert.equal(routedOffer["participantId"], AGENT_ID);
-    assert.equal(routedOffer["targetParticipantId"], CUSTOMER_ID);
-    assert.equal(routedOffer["messageId"], offerAck.data.messageId);
-
-    await wait(50);
-    assert.equal(senderOfferCount, 0);
-
-    const answerReceived = waitForEvent<Record<string, unknown>>(
-      agentSocket,
-      "webrtc:answer",
+    const downloadResponse = await fetch(
+      `${url}${String(readyRecording["downloadUrl"])}`,
     );
-    const answerAck = await emitAck(customerSocket, "webrtc:answer", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-      targetParticipantId: AGENT_ID,
-      description: {
-        type: "answer",
-        sdp: "v=0\r\n",
-      },
+    const downloaded = Buffer.from(await downloadResponse.arrayBuffer());
+
+    assert.equal(downloadResponse.status, 200);
+    assert.deepEqual(downloaded, Buffer.concat([firstChunk, secondChunk]));
+
+    const secondStart = await fetch(`${url}/api/recordings/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: SESSION_ID,
+        participantId: AGENT_ID,
+        mimeType: "video/webm",
+      }),
+    });
+    const secondStartBody = (await secondStart.json()) as {
+      recording: { id: string };
+    };
+
+    assert.equal(secondStart.status, 201);
+
+    const endResponse = await fetch(`${url}/api/sessions/${SESSION_ID}/end`, {
+      method: "POST",
+    });
+    assert.equal(endResponse.status, 200);
+
+    const autoStopped = await prisma.recording.findUniqueOrThrow({
+      where: { id: secondStartBody.recording.id },
     });
 
-    assert.equal(answerAck.ok, true);
-    assert.equal((await answerReceived)["participantId"], CUSTOMER_ID);
-
-    const iceReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:ice-candidate",
-    );
-    const iceAck = await emitAck(agentSocket, "webrtc:ice-candidate", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      candidate: null,
-    });
-
-    assert.equal(iceAck.ok, true);
-    assert.equal((await iceReceived)["candidate"], null);
-
-    await emitAck(agentSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-    });
-    await emitAck(customerSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-    });
+    assert.equal(autoStopped.status, "PROCESSING");
+    assert.equal(autoStopped.stopReason, "SESSION_ENDED");
   } finally {
     agentSocket.disconnect();
     customerSocket.disconnect();
     io.close();
     await closeServer(httpServer);
     await prisma.$disconnect();
-    await rm(directory, {
-      recursive: true,
-      force: true,
-    });
+    await rm(directory, { recursive: true, force: true });
   }
 });

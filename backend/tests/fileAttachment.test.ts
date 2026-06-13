@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import express from "express";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 
-const SESSION_ID = "webrtc-session-1";
-const AGENT_ID = "webrtc-agent-1";
-const CUSTOMER_ID = "webrtc-customer-1";
+const SESSION_ID = "file-session-1";
+const TOKEN = "file-token";
+const AGENT_ID = "file-agent-1";
+const CUSTOMER_ID = "file-customer-1";
 
 type AckResponse<TPayload = unknown> =
   | {
@@ -21,20 +23,43 @@ type AckResponse<TPayload = unknown> =
       error: {
         code: string;
         message: string;
-        details?: Record<string, unknown>;
       };
     };
 
-async function createTempDatabase(): Promise<{
+interface ChatEventPayload {
+  sessionId: string;
+  room: string;
+  message: {
+    id: string;
+    sessionId: string;
+    participantId: string;
+    role: "AGENT" | "CUSTOMER";
+    kind: "TEXT" | "FILE";
+    content: string;
+    attachment: {
+      id: string;
+      originalName: string;
+      mimeType: string;
+      extension: string;
+      sizeBytes: number;
+      downloadUrl: string;
+    } | null;
+    createdAt: string;
+  };
+}
+
+async function createTempWorkspace(): Promise<{
   directory: string;
   databaseUrl: string;
+  fileStorageDirectory: string;
 }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-webrtc-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "atomquest-files-"));
   const databasePath = path.join(directory, "test.db").replace(/\\/g, "/");
 
   return {
     directory,
     databaseUrl: `file:${databasePath}`,
+    fileStorageDirectory: path.join(directory, "uploads", "files"),
   };
 }
 
@@ -118,13 +143,7 @@ async function prepareSchema(
     `CREATE UNIQUE INDEX "Session_token_key" ON "Session"("token")`,
   );
   await prisma.$executeRawUnsafe(
-    `CREATE INDEX "Session_status_idx" ON "Session"("status")`,
-  );
-  await prisma.$executeRawUnsafe(
     `CREATE UNIQUE INDEX "Participant_sessionId_role_key" ON "Participant"("sessionId", "role")`,
-  );
-  await prisma.$executeRawUnsafe(
-    `CREATE INDEX "Participant_sessionId_idx" ON "Participant"("sessionId")`,
   );
   await prisma.$executeRawUnsafe(
     `CREATE INDEX "Message_sessionId_createdAt_idx" ON "Message"("sessionId", "createdAt")`,
@@ -147,30 +166,6 @@ async function prepareSchema(
   await prisma.$executeRawUnsafe(
     `CREATE INDEX "FileAttachment_participantId_idx" ON "FileAttachment"("participantId")`,
   );
-}
-
-async function seedSession(
-  prisma: typeof import("../src/config/prisma.js").prisma,
-): Promise<void> {
-  await prisma.session.create({
-    data: {
-      id: SESSION_ID,
-      token: "webrtc-token",
-      status: "ACTIVE",
-      participants: {
-        create: [
-          {
-            id: AGENT_ID,
-            role: "AGENT",
-          },
-          {
-            id: CUSTOMER_ID,
-            role: "CUSTOMER",
-          },
-        ],
-      },
-    },
-  });
 }
 
 async function listen(httpServer: HttpServer): Promise<string> {
@@ -268,142 +263,215 @@ function waitForEvent<TPayload>(
   });
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-test("WebRTC signaling validates membership and routes only to the target participant", async () => {
-  const { databaseUrl, directory } = await createTempDatabase();
+test("chat file sharing persists, broadcasts, validates, and downloads files", async () => {
+  const { databaseUrl, directory, fileStorageDirectory } =
+    await createTempWorkspace();
   process.env.DATABASE_URL = databaseUrl;
+  process.env.FILE_STORAGE_DIR = fileStorageDirectory;
 
-  const [{ initializeSocketServer }, { prisma }] = await Promise.all([
+  const [
+    { default: fileAttachmentRoutes },
+    { default: sessionRoutes },
+    { initializeSocketServer },
+    { prisma },
+  ] = await Promise.all([
+    import("../src/routes/fileAttachmentRoutes.js"),
+    import("../src/routes/sessionRoutes.js"),
     import("../src/sockets/socketServer.js"),
     import("../src/config/prisma.js"),
   ]);
 
   await prepareSchema(prisma);
-  await seedSession(prisma);
+  await prisma.session.create({
+    data: {
+      id: SESSION_ID,
+      token: TOKEN,
+      status: "ACTIVE",
+      participants: {
+        create: [
+          { id: AGENT_ID, role: "AGENT" },
+          { id: CUSTOMER_ID, role: "CUSTOMER" },
+        ],
+      },
+    },
+  });
 
-  const httpServer = createServer();
+  const app = express();
+  app.use(express.json());
+  app.use("/api/files", fileAttachmentRoutes);
+  app.use("/api/sessions", sessionRoutes);
+
+  const httpServer = createServer(app);
   const io = initializeSocketServer(httpServer);
   const url = await listen(httpServer);
   const agentSocket = await connectClient(url);
   const customerSocket = await connectClient(url);
 
   try {
-    const agentJoin = await emitAck(agentSocket, "session:join", {
+    await emitAck(agentSocket, "session:join", {
       sessionId: SESSION_ID,
       participantId: AGENT_ID,
       role: "AGENT",
     });
-
-    assert.equal(agentJoin.ok, true);
-
-    const unavailableTarget = await emitAck(agentSocket, "webrtc:offer", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      description: {
-        type: "offer",
-        sdp: "v=0\r\n",
-      },
-    });
-
-    assert.equal(unavailableTarget.ok, false);
-    assert.equal(unavailableTarget.error.code, "TARGET_NOT_AVAILABLE");
-
-    const customerJoin = await emitAck(customerSocket, "session:join", {
+    await emitAck(customerSocket, "session:join", {
       sessionId: SESSION_ID,
       participantId: CUSTOMER_ID,
       role: "CUSTOMER",
     });
 
-    assert.equal(customerJoin.ok, true);
-
-    let senderOfferCount = 0;
-    agentSocket.on("webrtc:offer", () => {
-      senderOfferCount += 1;
-    });
-
-    const offerReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:offer",
-    );
-    const offerAck = await emitAck<{ messageId: string }>(
+    const agentSeesText = waitForEvent<ChatEventPayload>(
       agentSocket,
-      "webrtc:offer",
+      "session:chat:new",
+    );
+    const customerSeesText = waitForEvent<ChatEventPayload>(
+      customerSocket,
+      "session:chat:new",
+    );
+    const textAck = await emitAck<ChatEventPayload>(
+      agentSocket,
+      "session:chat:send",
       {
         sessionId: SESSION_ID,
         participantId: AGENT_ID,
-        targetParticipantId: CUSTOMER_ID,
-        description: {
-          type: "offer",
-          sdp: "v=0\r\n",
-        },
+        content: "Please review this file.",
       },
     );
 
-    assert.equal(offerAck.ok, true);
+    assert.equal(textAck.ok, true);
+    assert.equal(textAck.data.message.kind, "TEXT");
+    await Promise.all([agentSeesText, customerSeesText]);
 
-    const routedOffer = await offerReceived;
-
-    assert.equal(routedOffer["participantId"], AGENT_ID);
-    assert.equal(routedOffer["targetParticipantId"], CUSTOMER_ID);
-    assert.equal(routedOffer["messageId"], offerAck.data.messageId);
-
-    await wait(50);
-    assert.equal(senderOfferCount, 0);
-
-    const answerReceived = waitForEvent<Record<string, unknown>>(
+    const agentSeesFile = waitForEvent<ChatEventPayload>(
       agentSocket,
-      "webrtc:answer",
+      "session:chat:new",
     );
-    const answerAck = await emitAck(customerSocket, "webrtc:answer", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-      targetParticipantId: AGENT_ID,
-      description: {
-        type: "answer",
-        sdp: "v=0\r\n",
+    const customerSeesFile = waitForEvent<ChatEventPayload>(
+      customerSocket,
+      "session:chat:new",
+    );
+    const fileBytes = Buffer.from("hello from a shared file");
+    const uploadResponse = await fetch(`${url}/api/files/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-atomquest-session-id": SESSION_ID,
+        "x-atomquest-participant-id": CUSTOMER_ID,
+        "x-atomquest-file-name": encodeURIComponent("notes.txt"),
+      },
+      body: fileBytes,
+    });
+    const uploadBody = (await uploadResponse.json()) as {
+      attachment: {
+        id: string;
+        originalName: string;
+        sizeBytes: number;
+        downloadUrl: string;
+      };
+      message: {
+        kind: string;
+        attachment: { originalName: string } | null;
+      };
+    };
+
+    assert.equal(uploadResponse.status, 201);
+    assert.equal(uploadBody.message.kind, "FILE");
+    assert.equal(uploadBody.attachment.originalName, "notes.txt");
+    assert.equal(uploadBody.attachment.sizeBytes, fileBytes.length);
+
+    const [agentFileEvent, customerFileEvent] = await Promise.all([
+      agentSeesFile,
+      customerSeesFile,
+    ]);
+
+    assert.equal(agentFileEvent.message.kind, "FILE");
+    assert.equal(customerFileEvent.message.kind, "FILE");
+    assert.equal(
+      customerFileEvent.message.attachment?.originalName,
+      "notes.txt",
+    );
+
+    const invalidUpload = await fetch(`${url}/api/files/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "x-atomquest-session-id": SESSION_ID,
+        "x-atomquest-participant-id": CUSTOMER_ID,
+        "x-atomquest-file-name": encodeURIComponent("malware.exe"),
+      },
+      body: Buffer.from("nope"),
+    });
+
+    assert.equal(invalidUpload.status, 400);
+
+    const historyResponse = await fetch(
+      `${url}/api/sessions/${SESSION_ID}/messages`,
+    );
+    const historyBody = (await historyResponse.json()) as {
+      messages: Array<{ kind: string; content: string }>;
+    };
+
+    assert.equal(historyResponse.status, 200);
+    assert.deepEqual(
+      historyBody.messages.map((message) => message.kind),
+      ["TEXT", "FILE"],
+    );
+    assert.deepEqual(
+      historyBody.messages.map((message) => message.content),
+      ["Please review this file.", "notes.txt"],
+    );
+
+    const filesResponse = await fetch(
+      `${url}/api/files?sessionId=${encodeURIComponent(SESSION_ID)}`,
+    );
+    const filesBody = (await filesResponse.json()) as {
+      files: Array<{ id: string; originalName: string }>;
+    };
+
+    assert.equal(filesResponse.status, 200);
+    assert.equal(filesBody.files.length, 1);
+    assert.equal(filesBody.files[0]?.originalName, "notes.txt");
+
+    const deniedDownload = await fetch(
+      `${url}/api/files/${uploadBody.attachment.id}/download?token=wrong`,
+    );
+    assert.equal(deniedDownload.status, 404);
+
+    const downloadResponse = await fetch(
+      `${url}${uploadBody.attachment.downloadUrl}`,
+    );
+    const downloaded = Buffer.from(await downloadResponse.arrayBuffer());
+
+    assert.equal(downloadResponse.status, 200);
+    assert.equal(downloadResponse.headers.get("content-type"), "text/plain");
+    assert.deepEqual(downloaded, fileBytes);
+
+    await prisma.session.update({
+      where: { id: SESSION_ID },
+      data: {
+        status: "ENDED",
+        endedAt: new Date(),
+        endedBy: "AGENT",
       },
     });
 
-    assert.equal(answerAck.ok, true);
-    assert.equal((await answerReceived)["participantId"], CUSTOMER_ID);
-
-    const iceReceived = waitForEvent<Record<string, unknown>>(
-      customerSocket,
-      "webrtc:ice-candidate",
-    );
-    const iceAck = await emitAck(agentSocket, "webrtc:ice-candidate", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-      targetParticipantId: CUSTOMER_ID,
-      candidate: null,
+    const endedUpload = await fetch(`${url}/api/files/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-atomquest-session-id": SESSION_ID,
+        "x-atomquest-participant-id": CUSTOMER_ID,
+        "x-atomquest-file-name": encodeURIComponent("late.txt"),
+      },
+      body: Buffer.from("too late"),
     });
 
-    assert.equal(iceAck.ok, true);
-    assert.equal((await iceReceived)["candidate"], null);
-
-    await emitAck(agentSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: AGENT_ID,
-    });
-    await emitAck(customerSocket, "session:leave", {
-      sessionId: SESSION_ID,
-      participantId: CUSTOMER_ID,
-    });
+    assert.equal(endedUpload.status, 409);
   } finally {
     agentSocket.disconnect();
     customerSocket.disconnect();
     io.close();
     await closeServer(httpServer);
     await prisma.$disconnect();
-    await rm(directory, {
-      recursive: true,
-      force: true,
-    });
+    await rm(directory, { recursive: true, force: true });
   }
 });
