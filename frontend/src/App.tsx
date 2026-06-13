@@ -1,9 +1,7 @@
+import AgentDashboard from "./pages/AgentDashboard";
+
 function App() {
-  return (
-    <div>
-      <h1>AtomQuest Video Support Platform</h1>
-    </div>
-  );
+  return <AgentDashboard />;
 }
 
 export default App;
