@@ -6,15 +6,28 @@ datasource db {
   provider = "sqlite"
 }
 
+enum SessionStatus {
+  ACTIVE
+  ENDED
+}
+
+enum ParticipantRole {
+  AGENT
+  CUSTOMER
+}
+
 model Session {
   id            String        @id @default(cuid())
   token         String        @unique
-  status        String
+  status        SessionStatus @default(ACTIVE)
   createdAt     DateTime      @default(now())
   endedAt       DateTime?
+  endedBy       String?
 
   participants  Participant[]
   messages      Message[]
+
+  @@index([status])
 }
 
 model Participant {
@@ -23,10 +36,13 @@ model Participant {
   sessionId  String
   session    Session  @relation(fields: [sessionId], references: [id])
 
-  role       String
+  role       ParticipantRole
 
   joinedAt   DateTime @default(now())
   leftAt     DateTime?
+
+  @@unique([sessionId, role])
+  @@index([sessionId])
 }
 
 model Message {
@@ -39,4 +55,6 @@ model Message {
   content    String
 
   createdAt  DateTime @default(now())
+
+  @@index([sessionId, createdAt])
 }
