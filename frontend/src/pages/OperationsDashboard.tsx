@@ -1,6 +1,8 @@
 import {
   AlertCircle,
   CalendarClock,
+  ChevronDown,
+  ChevronUp,
   CircleDot,
   Clock3,
   Download,
@@ -439,6 +441,9 @@ function SessionsTable({
   title: string;
 }) {
   const hasForceEndAction = onForceEnd !== undefined;
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const displayedSessions = isExpanded ? sessions : sessions.slice(0, 10);
 
   return (
     <section className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
@@ -461,98 +466,122 @@ function SessionsTable({
           {emptyLabel}
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-[980px] w-full text-left">
-            <thead className="bg-zinc-50 text-xs font-semibold uppercase text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
-              <tr>
-                <th className="px-6 py-4">Session ID</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4 text-right">Participants</th>
-                <th className="px-6 py-4">Duration</th>
-                <th className="px-6 py-4">Created</th>
-                <th className="px-6 py-4 text-right">
-                  {hasForceEndAction ? "Action" : "Ended"}
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {sessions.map((session) => (
-                <tr
-                  className="transition hover:bg-zinc-50/80 dark:hover:bg-zinc-800/45"
-                  key={session.id}
-                >
-                  <td className="px-6 py-5">
-                    <div className="flex items-center gap-3">
-                      <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
-                        <Video className="size-4" aria-hidden="true" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-mono text-sm font-semibold text-zinc-950 dark:text-zinc-50">
-                          {shortId(session.id)}
-                        </p>
-                        <p className="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
-                          {session.id}
-                        </p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-5">
-                    <StatusBadge status={session.status} />
-                  </td>
-                  <td className="px-6 py-5 text-right text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                    {session.participantCount}
-                  </td>
-                  <td className="px-6 py-5">
-                    <div className="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                      <Clock3
-                        className="size-4 text-zinc-400"
-                        aria-hidden="true"
-                      />
-                      {formatDuration({
-                        createdAt: session.createdAt,
-                        endedAt: session.endedAt,
-                        now,
-                      })}
-                    </div>
-                  </td>
-                  <td className="px-6 py-5">
-                    <div className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
-                      <CalendarClock
-                        className="size-4 text-zinc-400"
-                        aria-hidden="true"
-                      />
-                      {formatDate(session.createdAt)}
-                    </div>
-                  </td>
-                  <td className="px-6 py-5 text-right">
-                    {hasForceEndAction ? (
-                      <button
-                        className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-700 shadow-sm transition hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-65 dark:border-red-400/30 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15 dark:focus:ring-offset-zinc-950"
-                        disabled={endingSessionId === session.id}
-                        onClick={() => onForceEnd(session)}
-                        type="button"
-                      >
-                        {endingSessionId === session.id ? (
-                          <Loader2
-                            className="size-3.5 animate-spin"
-                            aria-hidden="true"
-                          />
-                        ) : (
-                          <PhoneOff className="size-3.5" aria-hidden="true" />
-                        )}
-                        Force End
-                      </button>
-                    ) : (
-                      <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                        {formatDate(session.endedAt)}
-                      </span>
-                    )}
-                  </td>
+        <>
+          <div className="overflow-x-auto">
+            <table className="min-w-[980px] w-full text-left">
+              <thead className="bg-zinc-50 text-xs font-semibold uppercase text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
+                <tr>
+                  <th className="px-6 py-4">Session ID</th>
+                  <th className="px-6 py-4">Status</th>
+                  <th className="px-6 py-4 text-right">Participants</th>
+                  <th className="px-6 py-4">Duration</th>
+                  <th className="px-6 py-4">Created</th>
+                  <th className="px-6 py-4 text-right">
+                    {hasForceEndAction ? "Action" : "Ended"}
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {displayedSessions.map((session) => (
+                  <tr
+                    className="transition hover:bg-zinc-50/80 dark:hover:bg-zinc-800/45"
+                    key={session.id}
+                  >
+                    <td className="px-6 py-5">
+                      <div className="flex items-center gap-3">
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+                          <Video className="size-4" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-mono text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                            {shortId(session.id)}
+                          </p>
+                          <p className="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
+                            {session.id}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-5">
+                      <StatusBadge status={session.status} />
+                    </td>
+                    <td className="px-6 py-5 text-right text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                      {session.participantCount}
+                    </td>
+                    <td className="px-6 py-5">
+                      <div className="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                        <Clock3
+                          className="size-4 text-zinc-400"
+                          aria-hidden="true"
+                        />
+                        {formatDuration({
+                          createdAt: session.createdAt,
+                          endedAt: session.endedAt,
+                          now,
+                        })}
+                      </div>
+                    </td>
+                    <td className="px-6 py-5">
+                      <div className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300">
+                        <CalendarClock
+                          className="size-4 text-zinc-400"
+                          aria-hidden="true"
+                        />
+                        {formatDate(session.createdAt)}
+                      </div>
+                    </td>
+                    <td className="px-6 py-5 text-right">
+                      {hasForceEndAction ? (
+                        <button
+                          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 text-xs font-semibold text-red-700 shadow-sm transition hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-65 dark:border-red-400/30 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15 dark:focus:ring-offset-zinc-950"
+                          disabled={endingSessionId === session.id}
+                          onClick={() => onForceEnd(session)}
+                          type="button"
+                        >
+                          {endingSessionId === session.id ? (
+                            <Loader2
+                              className="size-3.5 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <PhoneOff className="size-3.5" aria-hidden="true" />
+                          )}
+                          Force End
+                        </button>
+                      ) : (
+                        <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                          {formatDate(session.endedAt)}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {sessions.length > 10 && (
+            <div className="flex justify-center border-t border-zinc-100 bg-zinc-50/40 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-950/25">
+              <button
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 hover:text-zinc-950 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+                onClick={() => setIsExpanded(!isExpanded)}
+                type="button"
+              >
+                {isExpanded ? (
+                  <>
+                    <ChevronUp className="size-3.5" aria-hidden="true" />
+                    Hide Extra Logs
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="size-3.5" aria-hidden="true" />
+                    View All ({sessions.length})
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
