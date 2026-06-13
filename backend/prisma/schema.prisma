@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Session {
+  id            String        @id @default(cuid())
+  token         String        @unique
+  status        String
+  createdAt     DateTime      @default(now())
+  endedAt       DateTime?
+
+  participants  Participant[]
+  messages      Message[]
+}
+
+model Participant {
+  id         String   @id @default(cuid())
+
+  sessionId  String
+  session    Session  @relation(fields: [sessionId], references: [id])
+
+  role       String
+
+  joinedAt   DateTime @default(now())
+  leftAt     DateTime?
+}
+
+model Message {
+  id         String   @id @default(cuid())
+
+  sessionId  String
+  session    Session  @relation(fields: [sessionId], references: [id])
+
+  sender     String
+  content    String
+
+  createdAt  DateTime @default(now())
+}
