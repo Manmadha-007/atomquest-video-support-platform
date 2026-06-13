@@ -110,6 +110,7 @@ function mapSessionDetails(session: SessionWithDetails): SessionDetailsDto {
 function mapSessionListItem(session: SessionWithCounts): SessionListItemDto {
   return {
     id: session.id,
+    token: session.token,
     status: session.status,
     createdAt: session.createdAt.toISOString(),
     endedAt: toIsoStringOrNull(session.endedAt),

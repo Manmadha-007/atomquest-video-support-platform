@@ -1,9 +1,12 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
+import { createServer } from "node:http";
 
 import sessionRoutes from "./routes/sessionRoutes.js";
+import { initializeSocketServer } from "./sockets/socketServer.js";
 
 const app = express();
+const httpServer = createServer(app);
 
 app.use(cors());
 app.use(express.json());
@@ -28,6 +31,8 @@ app.use((_req: Request, res: Response) => {
 
 const PORT = 5000;
 
-app.listen(PORT, () => {
+initializeSocketServer(httpServer);
+
+httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

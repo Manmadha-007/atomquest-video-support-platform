@@ -4,6 +4,8 @@ import type {
   ApiErrorResponse,
   CreateSessionResponse,
   GetSessionsResponse,
+  JoinSessionRequest,
+  JoinSessionResponse,
   Participant,
   SessionDetails,
   SessionListItem,
@@ -37,6 +39,7 @@ function isSessionListItem(value: unknown): value is SessionListItem {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&
+    typeof value.token === "string" &&
     isSessionStatus(value.status) &&
     typeof value.createdAt === "string" &&
     isNullableString(value.endedAt) &&
@@ -108,6 +111,21 @@ function parseCreateSessionResponse(value: unknown): CreateSessionResponse {
   throw new Error("Unexpected created session response from the API.");
 }
 
+function parseJoinSessionResponse(value: unknown): JoinSessionResponse {
+  if (
+    isRecord(value) &&
+    isSessionDetails(value.session) &&
+    isParticipant(value.participant)
+  ) {
+    return {
+      session: value.session,
+      participant: value.participant,
+    };
+  }
+
+  throw new Error("Unexpected join session response from the API.");
+}
+
 export async function getSessions(): Promise<GetSessionsResponse> {
   const response = await sessionsApi.get<unknown>("/sessions");
   return parseGetSessionsResponse(response.data);
@@ -118,9 +136,17 @@ export async function createSession(): Promise<CreateSessionResponse> {
   return parseCreateSessionResponse(response.data);
 }
 
+export async function joinSession(
+  request: JoinSessionRequest,
+): Promise<JoinSessionResponse> {
+  const response = await sessionsApi.post<unknown>("/sessions/join", request);
+  return parseJoinSessionResponse(response.data);
+}
+
 export function toSessionListItem(session: SessionDetails): SessionListItem {
   return {
     id: session.id,
+    token: session.token,
     status: session.status,
     createdAt: session.createdAt,
     endedAt: session.endedAt,

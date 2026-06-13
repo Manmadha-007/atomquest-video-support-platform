@@ -45,6 +45,7 @@ export interface EndSessionRequest {
 
 export interface SessionListItemDto {
   id: string;
+  token: string;
   status: Session["status"];
   createdAt: string;
   endedAt: string | null;

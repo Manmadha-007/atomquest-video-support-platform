@@ -2,7 +2,9 @@ import {
   AlertCircle,
   ArrowUpRight,
   CalendarClock,
+  Check,
   CircleDot,
+  Copy,
   Loader2,
   MessageSquareText,
   Plus,
@@ -12,7 +14,7 @@ import {
   Video,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createSession,
@@ -53,6 +55,41 @@ function shortId(value: string): string {
   }
 
   return `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+function shortToken(value: string): string {
+  if (value.length <= 22) {
+    return value;
+  }
+
+  return `${value.slice(0, 12)}...${value.slice(-6)}`;
+}
+
+function getInvitePath(token: string): string {
+  return `/join/${encodeURIComponent(token)}`;
+}
+
+async function copyTextToClipboard(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+
+  document.body.appendChild(textArea);
+  textArea.select();
+
+  const wasCopied = document.execCommand("copy");
+  document.body.removeChild(textArea);
+
+  if (!wasCopied) {
+    throw new Error("Unable to copy invite link.");
+  }
 }
 
 function StatCard({
@@ -179,7 +216,15 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function SessionsTable({ sessions }: { sessions: SessionListItem[] }) {
+function SessionsTable({
+  copiedToken,
+  onCopyInviteLink,
+  sessions,
+}: {
+  copiedToken: string | null;
+  onCopyInviteLink: (token: string) => void;
+  sessions: SessionListItem[];
+}) {
   return (
     <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
       <div className="flex flex-col gap-2 border-b border-zinc-200 px-6 py-5 dark:border-zinc-800 sm:flex-row sm:items-end sm:justify-between">
@@ -197,10 +242,11 @@ function SessionsTable({ sessions }: { sessions: SessionListItem[] }) {
       </div>
 
       <div className="overflow-x-auto">
-        <table className="min-w-[820px] w-full text-left">
+        <table className="min-w-[1120px] w-full text-left">
           <thead className="bg-zinc-50 text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
             <tr>
-              <th className="px-6 py-4">Session</th>
+              <th className="px-6 py-4">Session ID</th>
+              <th className="px-6 py-4">Invite Token</th>
               <th className="px-6 py-4">Status</th>
               <th className="px-6 py-4">Created</th>
               <th className="px-6 py-4 text-right">People</th>
@@ -226,6 +272,35 @@ function SessionsTable({ sessions }: { sessions: SessionListItem[] }) {
                         {session.id}
                       </p>
                     </div>
+                  </div>
+                </td>
+                <td className="px-6 py-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-mono text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                        {shortToken(session.token)}
+                      </p>
+                      <p className="mt-1 truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                        {getInvitePath(session.token)}
+                      </p>
+                    </div>
+                    <button
+                      aria-label={`Copy invite link for session ${shortId(
+                        session.id,
+                      )}`}
+                      className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-xs font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-950/30 dark:text-zinc-200 dark:hover:bg-zinc-800 dark:focus:ring-offset-zinc-950"
+                      onClick={() => onCopyInviteLink(session.token)}
+                      type="button"
+                    >
+                      {copiedToken === session.token ? (
+                        <Check className="size-3.5" aria-hidden="true" />
+                      ) : (
+                        <Copy className="size-3.5" aria-hidden="true" />
+                      )}
+                      {copiedToken === session.token
+                        ? "Copied"
+                        : "Copy Invite Link"}
+                    </button>
                   </div>
                 </td>
                 <td className="px-6 py-5">
@@ -259,7 +334,17 @@ export default function AgentDashboard() {
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const copiedTokenTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTokenTimeoutRef.current !== null) {
+        window.clearTimeout(copiedTokenTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const fetchSessions = useCallback(async () => {
     setIsLoading(true);
@@ -333,6 +418,29 @@ export default function AgentDashboard() {
     }
   };
 
+  const handleCopyInviteLink = async (token: string) => {
+    const inviteLink = `${window.location.origin}${getInvitePath(token)}`;
+
+    try {
+      await copyTextToClipboard(inviteLink);
+      setCopiedToken(token);
+      setErrorMessage(null);
+
+      if (copiedTokenTimeoutRef.current !== null) {
+        window.clearTimeout(copiedTokenTimeoutRef.current);
+      }
+
+      copiedTokenTimeoutRef.current = window.setTimeout(() => {
+        setCopiedToken((currentToken) =>
+          currentToken === token ? null : currentToken,
+        );
+        copiedTokenTimeoutRef.current = null;
+      }, 2400);
+    } catch (error) {
+      setErrorMessage(getSessionApiErrorMessage(error));
+    }
+  };
+
   const hasSessions = sessions.length > 0;
 
   return (
@@ -398,7 +506,11 @@ export default function AgentDashboard() {
         {isLoading ? (
           <LoadingSkeleton />
         ) : hasSessions ? (
-          <SessionsTable sessions={sessions} />
+          <SessionsTable
+            copiedToken={copiedToken}
+            onCopyInviteLink={handleCopyInviteLink}
+            sessions={sessions}
+          />
         ) : (
           <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
             <EmptyState onCreate={handleCreateSession} />
