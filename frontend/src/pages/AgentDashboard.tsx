@@ -5,14 +5,11 @@ import {
   Copy,
   LinkIcon,
   Loader2,
-  Mic,
-  Pause,
   PhoneCall,
   PhoneOff,
   Plus,
   Radio,
   RefreshCw,
-  Square,
   UserRound,
   Video,
 } from "lucide-react";
@@ -223,49 +220,7 @@ function EmptyWorkspace({
   );
 }
 
-function RecordingPlaceholder() {
-  return (
-    <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
-      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold uppercase text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-            <Mic className="size-3.5" aria-hidden="true" />
-            Recording
-          </div>
-          <h2 className="mt-3 text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-            Controls placeholder
-          </h2>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 text-sm font-semibold text-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-500"
-            disabled
-            type="button"
-          >
-            <CircleDot className="size-4" aria-hidden="true" />
-            Record
-          </button>
-          <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 text-sm font-semibold text-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-500"
-            disabled
-            type="button"
-          >
-            <Pause className="size-4" aria-hidden="true" />
-            Pause
-          </button>
-          <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 text-sm font-semibold text-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-500"
-            disabled
-            type="button"
-          >
-            <Square className="size-4" aria-hidden="true" />
-            Stop
-          </button>
-        </div>
-      </div>
-    </section>
-  );
-}
+
 
 export default function AgentDashboard() {
   const navigate = useNavigate();
@@ -659,7 +614,6 @@ export default function AgentDashboard() {
           />
         )}
 
-        <RecordingPlaceholder />
       </div>
     </main>
   );

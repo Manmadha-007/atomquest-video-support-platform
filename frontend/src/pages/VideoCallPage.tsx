@@ -782,7 +782,9 @@ export default function VideoCallPage() {
       navigate("/agent");
     } else {
       window.close();
-      navigate("/");
+      setTimeout(() => {
+        alert("Please close this browser tab manually.");
+      }, 100);
     }
   }, [callConfig.role, navigate]);
 
@@ -1626,12 +1628,29 @@ export default function VideoCallPage() {
                 ref={localVideoRef}
               />
 
+              {!isCameraEnabled && (
+                <div className="absolute inset-0 flex items-center justify-center text-zinc-500">
+                  <UserRound className="size-8 sm:size-10 lg:size-12" aria-hidden="true" />
+                </div>
+              )}
 
               {/* PiP overlay tags */}
-              <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1 sm:bottom-2 sm:left-2 sm:right-2">
+              <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1.5 sm:bottom-2 sm:left-2 sm:right-2">
                 <span className="rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                   You
                 </span>
+                <div className="flex items-center gap-1">
+                  {!isMicrophoneEnabled && (
+                    <span className="flex size-5 items-center justify-center rounded-full bg-red-500/95 text-white shadow-sm" title="Microphone muted">
+                      <MicOff className="size-3" aria-hidden="true" />
+                    </span>
+                  )}
+                  {!isCameraEnabled && (
+                    <span className="flex size-5 items-center justify-center rounded-full bg-zinc-950/80 text-zinc-300 border border-white/10 shadow-sm" title="Camera off">
+                      <VideoOff className="size-3" aria-hidden="true" />
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           )}

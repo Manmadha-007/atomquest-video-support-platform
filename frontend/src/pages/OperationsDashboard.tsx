@@ -11,7 +11,6 @@ import {
   Paperclip,
   PhoneOff,
   RefreshCw,
-  ScrollText,
   ShieldAlert,
   UsersRound,
   Video,
@@ -156,6 +155,10 @@ function formatFileSize(value: number | null): string {
 }
 
 function FilesTable({ files }: { files: FileAttachment[] }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const displayedFiles = isExpanded ? files : files.slice(0, 10);
+
   return (
     <section className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
       <div className="flex items-end justify-between gap-4 border-b border-zinc-200 px-6 py-5 dark:border-zinc-800">
@@ -174,58 +177,82 @@ function FilesTable({ files }: { files: FileAttachment[] }) {
           No shared files yet.
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] text-left">
-            <thead className="bg-zinc-50 text-xs font-semibold uppercase text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
-              <tr>
-                <th className="px-6 py-4">File</th>
-                <th className="px-6 py-4">Session</th>
-                <th className="px-6 py-4">Type</th>
-                <th className="px-6 py-4">Size</th>
-                <th className="px-6 py-4">Shared</th>
-                <th className="px-6 py-4 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {files.map((file) => (
-                <tr
-                  className="transition hover:bg-zinc-50/80 dark:hover:bg-zinc-800/45"
-                  key={file.id}
-                >
-                  <td className="px-6 py-5">
-                    <p className="max-w-xs truncate text-sm font-semibold">
-                      {file.originalName}
-                    </p>
-                    <p className="mt-1 font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                      {shortId(file.id)}
-                    </p>
-                  </td>
-                  <td className="px-6 py-5 font-mono text-sm font-semibold">
-                    {shortId(file.sessionId)}
-                  </td>
-                  <td className="px-6 py-5 text-sm uppercase text-zinc-600 dark:text-zinc-300">
-                    {file.extension}
-                  </td>
-                  <td className="px-6 py-5 text-sm font-medium">
-                    {formatFileSize(file.sizeBytes)}
-                  </td>
-                  <td className="px-6 py-5 text-sm text-zinc-600 dark:text-zinc-300">
-                    {formatDate(file.createdAt)}
-                  </td>
-                  <td className="px-6 py-5 text-right">
-                    <a
-                      className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white transition hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-                      href={getFileDownloadUrl(file)}
-                    >
-                      <Download className="size-3.5" aria-hidden="true" />
-                      Download
-                    </a>
-                  </td>
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-left">
+              <thead className="bg-zinc-50 text-xs font-semibold uppercase text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
+                <tr>
+                  <th className="px-6 py-4">File</th>
+                  <th className="px-6 py-4">Session</th>
+                  <th className="px-6 py-4">Type</th>
+                  <th className="px-6 py-4">Size</th>
+                  <th className="px-6 py-4">Shared</th>
+                  <th className="px-6 py-4 text-right">Action</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {displayedFiles.map((file) => (
+                  <tr
+                    className="transition hover:bg-zinc-50/80 dark:hover:bg-zinc-800/45"
+                    key={file.id}
+                  >
+                    <td className="px-6 py-5">
+                      <p className="max-w-xs truncate text-sm font-semibold">
+                        {file.originalName}
+                      </p>
+                      <p className="mt-1 font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                        {shortId(file.id)}
+                      </p>
+                    </td>
+                    <td className="px-6 py-5 font-mono text-sm font-semibold">
+                      {shortId(file.sessionId)}
+                    </td>
+                    <td className="px-6 py-5 text-sm uppercase text-zinc-600 dark:text-zinc-300">
+                      {file.extension}
+                    </td>
+                    <td className="px-6 py-5 text-sm font-medium">
+                      {formatFileSize(file.sizeBytes)}
+                    </td>
+                    <td className="px-6 py-5 text-sm text-zinc-600 dark:text-zinc-300">
+                      {formatDate(file.createdAt)}
+                    </td>
+                    <td className="px-6 py-5 text-right">
+                      <a
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white transition hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                        href={getFileDownloadUrl(file)}
+                      >
+                        <Download className="size-3.5" aria-hidden="true" />
+                        Download
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {files.length > 10 && (
+            <div className="flex justify-center border-t border-zinc-100 bg-zinc-50/40 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-950/25">
+              <button
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 hover:text-zinc-950 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+                onClick={() => setIsExpanded(!isExpanded)}
+                type="button"
+              >
+                {isExpanded ? (
+                  <>
+                    <ChevronUp className="size-3.5" aria-hidden="true" />
+                    Hide Extra Files
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="size-3.5" aria-hidden="true" />
+                    View All ({files.length})
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -238,6 +265,10 @@ function RecordingsTable({
   now: number;
   recordings: Recording[];
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const displayedRecordings = isExpanded ? recordings : recordings.slice(0, 10);
+
   return (
     <section className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
       <div className="flex items-end justify-between gap-4 border-b border-zinc-200 px-6 py-5 dark:border-zinc-800">
@@ -256,82 +287,106 @@ function RecordingsTable({
           No recordings yet.
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[920px] text-left">
-            <thead className="bg-zinc-50 text-xs font-semibold uppercase text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
-              <tr>
-                <th className="px-6 py-4">Session</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Started</th>
-                <th className="px-6 py-4">Duration</th>
-                <th className="px-6 py-4">Size</th>
-                <th className="px-6 py-4 text-right">File</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {recordings.map((recording) => {
-                const downloadUrl = getRecordingDownloadUrl(recording);
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-left">
+              <thead className="bg-zinc-50 text-xs font-semibold uppercase text-zinc-500 dark:bg-zinc-950/55 dark:text-zinc-400">
+                <tr>
+                  <th className="px-6 py-4">Session</th>
+                  <th className="px-6 py-4">Status</th>
+                  <th className="px-6 py-4">Started</th>
+                  <th className="px-6 py-4">Duration</th>
+                  <th className="px-6 py-4">Size</th>
+                  <th className="px-6 py-4 text-right">File</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {displayedRecordings.map((recording) => {
+                  const downloadUrl = getRecordingDownloadUrl(recording);
 
-                return (
-                  <tr
-                    className="transition hover:bg-zinc-50/80 dark:hover:bg-zinc-800/45"
-                    key={recording.id}
-                  >
-                    <td className="px-6 py-5">
-                      <p className="font-mono text-sm font-semibold">
-                        {shortId(recording.sessionId)}
-                      </p>
-                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        {shortId(recording.id)}
-                      </p>
-                    </td>
-                    <td className="px-6 py-5">
-                      <RecordingStatusBadge status={recording.status} />
-                      {recording.failureReason && (
-                        <p className="mt-2 max-w-xs text-xs text-red-600 dark:text-red-300">
-                          {recording.failureReason}
+                  return (
+                    <tr
+                      className="transition hover:bg-zinc-50/80 dark:hover:bg-zinc-800/45"
+                      key={recording.id}
+                    >
+                      <td className="px-6 py-5">
+                        <p className="font-mono text-sm font-semibold">
+                          {shortId(recording.sessionId)}
                         </p>
-                      )}
-                    </td>
-                    <td className="px-6 py-5 text-sm text-zinc-600 dark:text-zinc-300">
-                      {formatDate(recording.startedAt)}
-                    </td>
-                    <td className="px-6 py-5 text-sm font-medium">
-                      {recording.durationMs === null
-                        ? "Pending"
-                        : formatDuration({
-                            createdAt: recording.startedAt,
-                            endedAt:
-                              recording.stoppedAt ??
-                              new Date(
-                                new Date(recording.startedAt).getTime() +
-                                  recording.durationMs,
-                              ).toISOString(),
-                            now,
-                          })}
-                    </td>
-                    <td className="px-6 py-5 text-sm font-medium">
-                      {formatFileSize(recording.sizeBytes)}
-                    </td>
-                    <td className="px-6 py-5 text-right">
-                      {downloadUrl ? (
-                        <a
-                          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white transition hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
-                          href={downloadUrl}
-                        >
-                          <Download className="size-3.5" aria-hidden="true" />
-                          Download
-                        </a>
-                      ) : (
-                        <span className="text-sm text-zinc-400">Unavailable</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          {shortId(recording.id)}
+                        </p>
+                      </td>
+                      <td className="px-6 py-5">
+                        <RecordingStatusBadge status={recording.status} />
+                        {recording.failureReason && (
+                          <p className="mt-2 max-w-xs text-xs text-red-600 dark:text-red-300">
+                            {recording.failureReason}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-6 py-5 text-sm text-zinc-600 dark:text-zinc-300">
+                        {formatDate(recording.startedAt)}
+                      </td>
+                      <td className="px-6 py-5 text-sm font-medium">
+                        {recording.durationMs === null
+                          ? "Pending"
+                          : formatDuration({
+                              createdAt: recording.startedAt,
+                              endedAt:
+                                recording.stoppedAt ??
+                                new Date(
+                                  new Date(recording.startedAt).getTime() +
+                                    recording.durationMs,
+                                ).toISOString(),
+                              now,
+                            })}
+                      </td>
+                      <td className="px-6 py-5 text-sm font-medium">
+                        {formatFileSize(recording.sizeBytes)}
+                      </td>
+                      <td className="px-6 py-5 text-right">
+                        {downloadUrl ? (
+                          <a
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-zinc-950 px-3 text-xs font-semibold text-white transition hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                            href={downloadUrl}
+                          >
+                            <Download className="size-3.5" aria-hidden="true" />
+                            Download
+                          </a>
+                        ) : (
+                          <span className="text-sm text-zinc-400">Unavailable</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {recordings.length > 10 && (
+            <div className="flex justify-center border-t border-zinc-100 bg-zinc-50/40 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-950/25">
+              <button
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 hover:text-zinc-950 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+                onClick={() => setIsExpanded(!isExpanded)}
+                type="button"
+              >
+                {isExpanded ? (
+                  <>
+                    <ChevronUp className="size-3.5" aria-hidden="true" />
+                    Hide Extra Recordings
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="size-3.5" aria-hidden="true" />
+                    View All ({recordings.length})
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -777,22 +832,6 @@ export default function OperationsDashboard() {
           </>
         )}
 
-        <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm shadow-zinc-200/70 dark:border-zinc-800 dark:bg-zinc-900 dark:shadow-black/20">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-semibold uppercase text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-                <ScrollText className="size-3.5" aria-hidden="true" />
-                Event Logs
-              </div>
-              <h2 className="mt-3 text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-                Placeholder
-              </h2>
-            </div>
-            <div className="rounded-lg border border-dashed border-zinc-300 px-4 py-3 text-sm font-medium text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-              session.created / session.joined / session.ended
-            </div>
-          </div>
-        </section>
       </div>
     </main>
   );

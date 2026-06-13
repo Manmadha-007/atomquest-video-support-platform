@@ -361,27 +361,9 @@ export function WaitingRoomStage({
         <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl text-white">
           {isAgent ? "Waiting for customer to join" : "Waiting for support agent"}
         </h2>
-      <p className="mt-2 text-sm leading-6 text-zinc-300 sm:text-base">
-        The support session is active and secure. The call will start automatically as soon as the other participant connects.
-      </p>
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-xs font-semibold">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-zinc-200">
-            {isCameraEnabled ? (
-              <Video className="size-3.5 text-emerald-300" aria-hidden="true" />
-            ) : (
-              <VideoOff className="size-3.5 text-zinc-500" aria-hidden="true" />
-            )}
-            Camera {isCameraEnabled ? "ready" : "off"}
-          </span>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-zinc-200">
-            {isMicrophoneEnabled ? (
-              <Mic className="size-3.5 text-emerald-300" aria-hidden="true" />
-            ) : (
-              <MicOff className="size-3.5 text-zinc-500" aria-hidden="true" />
-            )}
-            Mic {isMicrophoneEnabled ? "ready" : "muted"}
-          </span>
-        </div>
+        <p className="mt-2 text-sm leading-6 text-zinc-300 sm:text-base">
+          The support session is active and secure. The call will start automatically as soon as the other participant connects.
+        </p>
       </div>
     </div>
   );
