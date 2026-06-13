@@ -39,6 +39,8 @@ cd backend
 npm install
 cp .env.example .env
 npx prisma migrate deploy
+npx prisma generate
+npm run build
 npm run dev
 ```
 
@@ -56,6 +58,7 @@ Open a second terminal:
 cd frontend
 npm install
 cp .env.example .env
+npm run build
 npm run dev
 ```
 
