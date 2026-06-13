@@ -14,18 +14,34 @@ export interface SessionLeavePayload {
   participantId?: string;
 }
 
+export type ParticipantPresenceStatus = "online" | "reconnecting" | "offline";
+
 export interface ActiveSessionParticipant {
-  socketId: string;
   sessionId: string;
   participantId: string;
   role: SocketParticipantRole;
+  activeSocketId: string | null;
+  status: ParticipantPresenceStatus;
+  connectionVersion: number;
   joinedAt: string;
+  lastSeenAt: string;
+  disconnectDeadline: string | null;
   transport: string;
 }
 
-export type ParticipantUpdateAction = "joined" | "left";
+export type ParticipantUpdateAction =
+  | "joined"
+  | "reconnected"
+  | "replaced"
+  | "reconnecting"
+  | "left"
+  | "offline";
 
-export type ParticipantLeaveReason = "client_leave" | "disconnect";
+export type ParticipantLeaveReason =
+  | "client_leave"
+  | "disconnect"
+  | "socket_replaced"
+  | "grace_expired";
 
 export interface SessionJoinedPayload {
   sessionId: string;

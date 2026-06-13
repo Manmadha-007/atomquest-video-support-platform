@@ -1,9 +1,14 @@
 import { SessionStatus } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
+import {
+  participantPresenceRegistry,
+  type JoinPresenceResult,
+} from "./presenceRegistry.js";
 import type {
   ActiveSessionParticipant,
   ParticipantLeaveReason,
+  ParticipantUpdateAction,
   ParticipantUpdatePayload,
   SessionJoinedPayload,
   SessionJoinPayload,
@@ -18,11 +23,6 @@ import type {
 } from "./types.js";
 
 const MAX_ID_LENGTH = 128;
-
-const activeParticipantsByRoom = new Map<
-  string,
-  Map<string, ActiveSessionParticipant>
->();
 
 class SocketHandlerError extends Error {
   public readonly code: SocketErrorCode;
@@ -161,44 +161,6 @@ export function getSessionRoomName(sessionId: string): string {
   return `session:${sessionId}`;
 }
 
-function getRoomParticipants(room: string): ActiveSessionParticipant[] {
-  return Array.from(activeParticipantsByRoom.get(room)?.values() ?? []);
-}
-
-function upsertActiveParticipant(
-  room: string,
-  participant: ActiveSessionParticipant,
-): ActiveSessionParticipant[] {
-  const roomParticipants =
-    activeParticipantsByRoom.get(room) ??
-    new Map<string, ActiveSessionParticipant>();
-
-  roomParticipants.set(participant.socketId, participant);
-  activeParticipantsByRoom.set(room, roomParticipants);
-
-  return getRoomParticipants(room);
-}
-
-function removeActiveParticipant(
-  room: string,
-  socketId: string,
-): ActiveSessionParticipant | null {
-  const roomParticipants = activeParticipantsByRoom.get(room);
-
-  if (!roomParticipants) {
-    return null;
-  }
-
-  const participant = roomParticipants.get(socketId) ?? null;
-  roomParticipants.delete(socketId);
-
-  if (roomParticipants.size === 0) {
-    activeParticipantsByRoom.delete(room);
-  }
-
-  return participant;
-}
-
 function toSocketError(error: unknown): SocketErrorPayload {
   if (error instanceof SocketHandlerError) {
     return {
@@ -284,39 +246,124 @@ async function assertParticipantCanJoin(
   }
 }
 
-function buildParticipantUpdate(
-  action: "joined",
+function buildParticipantUpdate({
+  action,
+  activeCount,
+  activeParticipants,
+  occurredAt,
+  participant,
+  reason,
+  room,
+}: {
+  action: ParticipantUpdateAction;
   room: string,
-  participant: ActiveSessionParticipant,
-  activeParticipants: ActiveSessionParticipant[],
-  occurredAt: string,
-): ParticipantUpdatePayload;
-function buildParticipantUpdate(
-  action: "left",
-  room: string,
-  participant: ActiveSessionParticipant,
-  activeParticipants: ActiveSessionParticipant[],
-  occurredAt: string,
-  reason: ParticipantLeaveReason,
-): ParticipantUpdatePayload;
-function buildParticipantUpdate(
-  action: "joined" | "left",
-  room: string,
-  participant: ActiveSessionParticipant,
-  activeParticipants: ActiveSessionParticipant[],
-  occurredAt: string,
-  reason?: ParticipantLeaveReason,
-): ParticipantUpdatePayload {
+  participant: ActiveSessionParticipant;
+  activeParticipants: ActiveSessionParticipant[];
+  activeCount: number;
+  occurredAt: string;
+  reason?: ParticipantLeaveReason;
+}): ParticipantUpdatePayload {
   return {
     sessionId: participant.sessionId,
     room,
     action,
     participant,
     activeParticipants,
-    activeCount: activeParticipants.length,
+    activeCount,
     occurredAt,
     reason,
   };
+}
+
+function buildSessionLeftPayload({
+  activeCount,
+  activeParticipants,
+  participant,
+  reason,
+  room,
+}: {
+  room: string;
+  participant: ActiveSessionParticipant;
+  activeParticipants: ActiveSessionParticipant[];
+  activeCount: number;
+  reason: ParticipantLeaveReason;
+}): SessionLeftPayload {
+  return {
+    sessionId: participant.sessionId,
+    room,
+    participant,
+    activeParticipants,
+    activeCount,
+    leftAt: new Date().toISOString(),
+    reason,
+  };
+}
+
+function emitParticipantUpdate(
+  io: SocketServer,
+  result: {
+    action: ParticipantUpdateAction;
+    sessionId: string;
+    participant: ActiveSessionParticipant;
+    activeParticipants: ActiveSessionParticipant[];
+    activeCount: number;
+    reason?: ParticipantLeaveReason;
+  },
+): void {
+  const room = getSessionRoomName(result.sessionId);
+
+  io.to(room).emit(
+    "participant:update",
+    buildParticipantUpdate({
+      action: result.action,
+      room,
+      participant: result.participant,
+      activeParticipants: result.activeParticipants,
+      activeCount: result.activeCount,
+      occurredAt: new Date().toISOString(),
+      reason: result.reason,
+    }),
+  );
+}
+
+function replacePreviousSocket(
+  io: SocketServer,
+  room: string,
+  joinResult: JoinPresenceResult,
+): void {
+  if (!joinResult.replacedSocketId) {
+    return;
+  }
+
+  const replacedSocket = io.sockets.sockets.get(
+    joinResult.replacedSocketId,
+  ) as SessionSocket | undefined;
+
+  if (!replacedSocket) {
+    return;
+  }
+
+  delete replacedSocket.data.activeSessions[room];
+  void replacedSocket.leave(room);
+  replacedSocket.emit(
+    "session:left",
+    buildSessionLeftPayload({
+      room,
+      participant: joinResult.participant,
+      activeParticipants: joinResult.activeParticipants,
+      activeCount: joinResult.activeCount,
+      reason: "socket_replaced",
+    }),
+  );
+
+  logInfo("socket.session_socket_replaced", {
+    oldSocketId: joinResult.replacedSocketId,
+    newSocketId: joinResult.participant.activeSocketId,
+    room,
+    sessionId: joinResult.participant.sessionId,
+    participantId: joinResult.participant.participantId,
+    connectionVersion: joinResult.participant.connectionVersion,
+  });
 }
 
 async function handleJoinSession(
@@ -328,40 +375,29 @@ async function handleJoinSession(
   await assertParticipantCanJoin(payload);
 
   const room = getSessionRoomName(payload.sessionId);
-  const joinedAt = new Date().toISOString();
-  const participant: ActiveSessionParticipant = {
-    socketId: socket.id,
+  const joinResult = participantPresenceRegistry.join({
     sessionId: payload.sessionId,
     participantId: payload.participantId,
     role: payload.role,
-    joinedAt,
+    socketId: socket.id,
     transport: getTransportName(socket),
-  };
+  });
 
   await socket.join(room);
-  socket.data.activeSessions[room] = participant;
+  socket.data.activeSessions[room] = joinResult.participant;
+  replacePreviousSocket(io, room, joinResult);
 
-  const activeParticipants = upsertActiveParticipant(room, participant);
   const joinedPayload: SessionJoinedPayload = {
     sessionId: payload.sessionId,
     room,
-    participant,
-    activeParticipants,
-    activeCount: activeParticipants.length,
-    joinedAt,
+    participant: joinResult.participant,
+    activeParticipants: joinResult.activeParticipants,
+    activeCount: joinResult.activeCount,
+    joinedAt: joinResult.participant.joinedAt,
   };
 
   socket.emit("session:joined", joinedPayload);
-  io.to(room).emit(
-    "participant:update",
-    buildParticipantUpdate(
-      "joined",
-      room,
-      participant,
-      activeParticipants,
-      joinedAt,
-    ),
-  );
+  emitParticipantUpdate(io, joinResult);
   ack?.({
     ok: true,
     data: joinedPayload,
@@ -373,61 +409,12 @@ async function handleJoinSession(
     sessionId: payload.sessionId,
     participantId: payload.participantId,
     role: payload.role,
-    activeCount: activeParticipants.length,
+    action: joinResult.action,
+    activeSocketId: joinResult.participant.activeSocketId,
+    connectionVersion: joinResult.participant.connectionVersion,
+    status: joinResult.participant.status,
+    activeCount: joinResult.activeCount,
   });
-}
-
-function leaveRoom(
-  socket: SessionSocket,
-  room: string,
-  participant: ActiveSessionParticipant,
-  reason: ParticipantLeaveReason,
-): SessionLeftPayload {
-  const leftAt = new Date().toISOString();
-  const removedParticipant = removeActiveParticipant(room, socket.id);
-  const activeParticipants = getRoomParticipants(room);
-  const participantToEmit = removedParticipant ?? participant;
-  const leftPayload: SessionLeftPayload = {
-    sessionId: participantToEmit.sessionId,
-    room,
-    participant: participantToEmit,
-    activeParticipants,
-    activeCount: activeParticipants.length,
-    leftAt,
-    reason,
-  };
-
-  delete socket.data.activeSessions[room];
-
-  if (reason === "client_leave") {
-    socket.emit("session:left", leftPayload);
-  }
-
-  socket.to(room).emit("session:left", leftPayload);
-  socket.to(room).emit(
-    "participant:update",
-    buildParticipantUpdate(
-      "left",
-      room,
-      participantToEmit,
-      activeParticipants,
-      leftAt,
-      reason,
-    ),
-  );
-  socket.leave(room);
-
-  logInfo("socket.session_left", {
-    socketId: socket.id,
-    room,
-    sessionId: participantToEmit.sessionId,
-    participantId: participantToEmit.participantId,
-    role: participantToEmit.role,
-    reason,
-    activeCount: activeParticipants.length,
-  });
-
-  return leftPayload;
 }
 
 function handleLeaveSession(
@@ -461,25 +448,105 @@ function handleLeaveSession(
     );
   }
 
-  const leftPayload = leaveRoom(socket, room, participant, "client_leave");
+  const leaveResult = participantPresenceRegistry.leave({
+    sessionId: payload.sessionId,
+    participantId: payload.participantId,
+    socketId: socket.id,
+  });
+
+  if (!leaveResult) {
+    throw new SocketHandlerError(
+      "SESSION_NOT_FOUND",
+      "Socket has not joined the requested session room.",
+      { sessionId: payload.sessionId, room },
+    );
+  }
+
+  delete socket.data.activeSessions[room];
+
+  const leftPayload = buildSessionLeftPayload({
+    room,
+    participant: leaveResult.participant,
+    activeParticipants: leaveResult.activeParticipants,
+    activeCount: leaveResult.activeCount,
+    reason: leaveResult.reason,
+  });
+
+  socket.emit("session:left", leftPayload);
+  socket.to(room).emit("session:left", leftPayload);
+  emitParticipantUpdate(io, leaveResult);
+  socket.leave(room);
 
   ack?.({
     ok: true,
     data: leftPayload,
   });
+
+  logInfo("socket.session_left", {
+    socketId: socket.id,
+    room,
+    sessionId: leaveResult.sessionId,
+    participantId: leaveResult.participant.participantId,
+    role: leaveResult.participant.role,
+    reason: leaveResult.reason,
+    activeCount: leaveResult.activeCount,
+  });
 }
 
-function handleDisconnect(socket: SessionSocket, reason: string): void {
-  const activeSessions = Object.entries(socket.data.activeSessions);
+function handleReconnectGraceExpired(
+  io: SocketServer,
+  result: {
+    action: "offline";
+    reason: "grace_expired";
+    sessionId: string;
+    participant: ActiveSessionParticipant;
+    activeParticipants: ActiveSessionParticipant[];
+    activeCount: number;
+  },
+): void {
+  const room = getSessionRoomName(result.sessionId);
+  const leftPayload = buildSessionLeftPayload({
+    room,
+    participant: result.participant,
+    activeParticipants: result.activeParticipants,
+    activeCount: result.activeCount,
+    reason: result.reason,
+  });
 
-  for (const [room, participant] of activeSessions) {
-    leaveRoom(socket, room, participant, "disconnect");
+  io.to(room).emit("session:left", leftPayload);
+  emitParticipantUpdate(io, result);
+
+  logInfo("socket.session_offline", {
+    room,
+    sessionId: result.sessionId,
+    participantId: result.participant.participantId,
+    role: result.participant.role,
+    reason: result.reason,
+    activeCount: result.activeCount,
+  });
+}
+
+function handleDisconnect(
+  io: SocketServer,
+  socket: SessionSocket,
+  reason: string,
+): void {
+  const activeRooms = Object.keys(socket.data.activeSessions);
+  const reconnectingResults = participantPresenceRegistry.markSocketDisconnected(
+    socket.id,
+    (result) => handleReconnectGraceExpired(io, result),
+  );
+
+  for (const result of reconnectingResults) {
+    delete socket.data.activeSessions[getSessionRoomName(result.sessionId)];
+    emitParticipantUpdate(io, result);
   }
 
   logInfo("socket.disconnected", {
     socketId: socket.id,
     reason,
-    roomsLeft: activeSessions.length,
+    roomsLeft: activeRooms.length,
+    reconnectingParticipants: reconnectingResults.length,
   });
 }
 
@@ -547,7 +614,7 @@ export function registerSessionHandlers(
   });
 
   socket.on("disconnect", (reason) => {
-    handleDisconnect(socket, reason);
+    handleDisconnect(io, socket, reason);
   });
 
   socket.on("error", (error) => {
