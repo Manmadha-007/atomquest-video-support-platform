@@ -2,6 +2,7 @@ import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 
 import { registerSessionHandlers } from "./sessionHandlers.js";
+import { registerWebRtcSignalingHandlers } from "../webrtc/signalingHandlers.js";
 import type {
   ClientToServerEvents,
   InterServerEvents,
@@ -62,6 +63,7 @@ export function initializeSocketServer(httpServer: HttpServer): SocketServer {
     });
 
     registerSessionHandlers(io, socket);
+    registerWebRtcSignalingHandlers(io, socket);
   });
 
   logInfo("socket.server_initialized", {

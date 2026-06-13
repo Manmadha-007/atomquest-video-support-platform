@@ -1,31 +1,11 @@
-import type { Participant } from "@prisma/client";
-import type { Server, Socket } from "socket.io";
-import type {
-  WebRtcAnswerPayload,
-  WebRtcIceCandidatePayload,
-  WebRtcOfferPayload,
-  WebRtcSignalAckPayload,
-} from "../webrtc/contracts.js";
-
-export type SocketParticipantRole = Participant["role"];
-
-export interface SessionJoinPayload {
-  sessionId: string;
-  participantId: string;
-  role: SocketParticipantRole;
-}
-
-export interface SessionLeavePayload {
-  sessionId: string;
-  participantId?: string;
-}
+import type { ParticipantRole } from "../types/session";
 
 export type ParticipantPresenceStatus = "online" | "reconnecting" | "offline";
 
 export interface ActiveSessionParticipant {
   sessionId: string;
   participantId: string;
-  role: SocketParticipantRole;
+  role: ParticipantRole;
   activeSocketId: string | null;
   status: ParticipantPresenceStatus;
   connectionVersion: number;
@@ -35,19 +15,11 @@ export interface ActiveSessionParticipant {
   transport: string;
 }
 
-export type ParticipantUpdateAction =
-  | "joined"
-  | "reconnected"
-  | "replaced"
-  | "reconnecting"
-  | "left"
-  | "offline";
-
-export type ParticipantLeaveReason =
-  | "client_leave"
-  | "disconnect"
-  | "socket_replaced"
-  | "grace_expired";
+export interface SessionJoinPayload {
+  sessionId: string;
+  participantId: string;
+  role: ParticipantRole;
+}
 
 export interface SessionJoinedPayload {
   sessionId: string;
@@ -58,25 +30,54 @@ export interface SessionJoinedPayload {
   joinedAt: string;
 }
 
-export interface SessionLeftPayload {
+export type WebRtcSignalEvent =
+  | "webrtc:offer"
+  | "webrtc:answer"
+  | "webrtc:ice-candidate";
+
+export interface WebRtcSignalBasePayload {
   sessionId: string;
-  room: string;
-  participant: ActiveSessionParticipant;
-  activeParticipants: ActiveSessionParticipant[];
-  activeCount: number;
-  leftAt: string;
-  reason: ParticipantLeaveReason;
+  participantId: string;
+  targetParticipantId: string;
+  messageId?: string;
+  sentAt?: string;
 }
 
-export interface ParticipantUpdatePayload {
+export interface WebRtcSessionDescription {
+  type: "offer" | "answer";
+  sdp: string;
+}
+
+export interface WebRtcIceCandidate {
+  candidate: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
+}
+
+export interface WebRtcOfferPayload extends WebRtcSignalBasePayload {
+  description: WebRtcSessionDescription & {
+    type: "offer";
+  };
+}
+
+export interface WebRtcAnswerPayload extends WebRtcSignalBasePayload {
+  description: WebRtcSessionDescription & {
+    type: "answer";
+  };
+}
+
+export interface WebRtcIceCandidatePayload extends WebRtcSignalBasePayload {
+  candidate: WebRtcIceCandidate | null;
+}
+
+export interface WebRtcSignalAckPayload {
+  event: WebRtcSignalEvent;
   sessionId: string;
-  room: string;
-  action: ParticipantUpdateAction;
-  participant: ActiveSessionParticipant;
-  activeParticipants: ActiveSessionParticipant[];
-  activeCount: number;
-  occurredAt: string;
-  reason?: ParticipantLeaveReason;
+  participantId: string;
+  targetParticipantId: string;
+  messageId: string;
+  routedAt: string;
 }
 
 export type SocketErrorCode =
@@ -115,10 +116,6 @@ export interface ClientToServerEvents {
     payload: SessionJoinPayload,
     ack?: SocketAck<SessionJoinedPayload>,
   ) => void;
-  "session:leave": (
-    payload: SessionLeavePayload,
-    ack?: SocketAck<SessionLeftPayload>,
-  ) => void;
   "webrtc:offer": (
     payload: WebRtcOfferPayload,
     ack?: SocketAck<WebRtcSignalAckPayload>,
@@ -135,31 +132,7 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   "session:joined": (payload: SessionJoinedPayload) => void;
-  "session:left": (payload: SessionLeftPayload) => void;
-  "participant:update": (payload: ParticipantUpdatePayload) => void;
   "webrtc:offer": (payload: WebRtcOfferPayload) => void;
   "webrtc:answer": (payload: WebRtcAnswerPayload) => void;
   "webrtc:ice-candidate": (payload: WebRtcIceCandidatePayload) => void;
 }
-
-export interface InterServerEvents {
-  ping: () => void;
-}
-
-export interface SocketData {
-  activeSessions: Record<string, ActiveSessionParticipant>;
-}
-
-export type SocketServer = Server<
-  ClientToServerEvents,
-  ServerToClientEvents,
-  InterServerEvents,
-  SocketData
->;
-
-export type SessionSocket = Socket<
-  ClientToServerEvents,
-  ServerToClientEvents,
-  InterServerEvents,
-  SocketData
->;
